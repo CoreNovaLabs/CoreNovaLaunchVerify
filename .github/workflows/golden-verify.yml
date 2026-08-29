@@ -1,0 +1,152 @@
+# golden-verify.yml — L2 AWS Golden / Platform Verification（verify-gate-design.md §5）
+#
+# 这是**唯一**允许创建 AWS 资源的 Repo C 工作流：CFN canary + EC2 + cfn-init + 平台探针，
+# 产物是 Platform Contract（status=valid），供 Application Verification 的 RESOLVED 引用。
+# 低频触发（平台变更 / 手动 / 月度复验），常规版本验证绝不走这里（§6 能力对照）。
+name: golden-verify
+
+on:
+  repository_dispatch:
+    # Repo B 构建出新 base AMI 后通知（repo-structure.md §2 跨仓触发矩阵）
+    types: [ami-built]
+  workflow_dispatch:
+    inputs:
+      base_ami_source:
+        description: "覆盖 config/platform.yaml 的 base_ami_source（public|custom；留空=用配置）"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "只解析 + 校验模板，不创建 AWS 资源"
+        type: boolean
+        required: false
+        default: false
+      extra_args:
+        description: "透传给 golden_verify.py 的附加参数（--check / --drift / --keep-stack / --discard-stack / --ami-id …，以 --help 为准）"
+        required: false
+        type: string
+        default: ""
+  schedule:
+    # 每月 1 号与 16 号各一次：单次 `0 3 1 * *` 的间隔最长可达 31 天，
+    # 会击穿 platform-contract.md §2.1 的"公开 AMI 硬性 ≤30 天复验"，故必须取半月中点。
+    - cron: "0 3 1,16 * *"
+
+# 平台契约是 (region, arch) 级唯一事实源：两个 Golden 并行会互相覆盖 contract 文件，
+# 且第二个 run 读到的是半成品 → 全局单组 + 不打断正在跑的复验。
+concurrency:
+  group: golden-verify
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  golden:
+    name: AWS Golden Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 120        # EC2 启动 + cfn-init 装 Docker/Nginx + cfn-signal
+    env:
+      # §5 流程需要真实 AWS；缺凭据时直接失败，绝不"降级成公开网络模拟"
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+      BASE_AMI_SOURCE: ${{ inputs.base_ami_source }}
+      VERIFIED_BACKEND: ${{ secrets.VERIFIED_BACKEND || 'dir' }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+      # R2 endpoint 不在此注入：§6 表里没有它，取值走 config/verify.yaml 的 r2.endpoint
+      GITHUB_TOKEN: ${{ github.token }}
+    permissions:
+      contents: read
+      issues: write             # 平台层失败同样落 §7 台账（INFRASTRUCTURE → MANUAL_REQUIRED）
+    steps:
+      - name: Show trigger context
+        run: |
+          echo "触发方式：${{ github.event_name }}"
+          echo "event action/client_payload：${{ toJson(github.event.client_payload) }}"
+          echo "# 注意：AMI 只在脚本开头解析一次，中途不得再查 latest（repo-structure.md §3）"
+
+      - name: Guard — AWS credentials required
+        env:
+          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' && '1' || '' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # golden_verify.py 的 --dry-run / --check / --drift 完全离线（零 AWS 调用），
+          # 这三种模式下不该被凭据守卫挡住——否则 CI 连平台静态门禁都跑不了。
+          case " ${EXTRA_ARGS:-} " in
+            *--check*|*--drift*) OFFLINE=1 ;;
+            *) OFFLINE=${DRY_RUN} ;;
+          esac
+          if [ -z "${HAS_AWS}" ] && [ "${OFFLINE}" != "true" ]; then
+            echo "::error::golden-verify 需要 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION（见 repo-structure.md §6）。"
+            echo "只想验证应用层 → 请跑 application-verify.yml（默认无 AWS）。"
+            echo "或先用离线模式：勾 dry_run，或在 extra_args 填 --check / --drift。"
+            exit 1
+          fi
+
+      - name: Checkout Repo C
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Install AWS CLI v2
+        run: |
+          curl -sS https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install >/dev/null
+          aws --version
+
+      # 脚本由平台层工程师维护（scripts/verify/golden_verify.py，支持 --dry-run）；
+      # 本工作流只负责触发与凭据编排，不重复实现 §5 的 16 步流程。
+      - name: Run Golden Verification
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/verify/golden_verify.py ]; then
+            echo "::error::scripts/verify/golden_verify.py 尚未落地（Platform Verification 实现未完成）"
+            exit 1
+          fi
+          ARGS=()
+          if [ "${DRY_RUN}" = "true" ]; then ARGS+=(--dry-run); fi
+          # extra_args 是有意的词法拆分入口（只透传给 golden_verify.py，不 eval）
+          if [ -n "${EXTRA_ARGS:-}" ]; then
+            # shellcheck disable=SC2206
+            ARGS+=(${EXTRA_ARGS})
+          fi
+          echo "执行：python scripts/verify/golden_verify.py ${ARGS[*]:-}"
+          python scripts/verify/golden_verify.py "${ARGS[@]}"
+
+      - name: Upload platform contract
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-contract-${{ github.run_id }}
+          path: |
+            data/platform/
+            data/runs/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: 复验到期提示
+        if: always()
+        run: |
+          {
+            echo "## Golden Verification"
+            echo ""
+            echo "- 触发：\`${{ github.event_name }}\`"
+            echo "- base_ami_source 覆盖：\`${{ inputs.base_ami_source || '（用 config/platform.yaml）' }}\`"
+            echo "- 契约复验周期：≤30 天（platform-contract.md §2.1 硬性），本工作流每月 1/16 号自动复验"
+            echo "- 契约落地位置：生效后端 \`platform/platform-contract-<region>-<arch>.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,126 @@
+# publish-site.yml — L3 的收尾动作：通知 Repo A 重建前端（repo-structure.md §4.1）
+#
+# 它是"提示"，不是数据通道：前端真实数据一律从生效后端拉 verified/index.json + current.json。
+# 因此本工作流**不写任何事实源**，只做两件事：
+#   1) 复核 Publish Gate —— 没有 current.json 就不许发 dispatch（§5 反模式）
+#   2) 用 REPO_A_PAT 发 repository_dispatch(verified-update)
+# 引导期通常还没配 REPO_A_PAT：那是预期状态，明确 warning + 跳过，不伪装成功。
+name: publish-site
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "要通知的应用（留空 = 生效后端 index.json 里的全部已发布应用）"
+        required: false
+        type: string
+        default: ""
+      reason:
+        description: "人工重建原因（只进日志/摘要，便于审计）"
+        required: false
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      app_name:
+        type: string
+        required: false
+        default: ""
+      reason:
+        type: string
+        required: false
+        default: ""
+
+# 这里没有"撕裂 current.json"的风险（本工作流零写入），所以用全局单组即可；
+# 不要照抄 verify-* 的 app 级分组，也不要给空值加兜底后缀。
+concurrency:
+  group: publish-site
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    name: repository_dispatch → Repo A
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERIFIED_BACKEND: ${{ secrets.VERIFIED_BACKEND || 'dir' }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+      # R2 endpoint 不在此注入：§6 表里没有它，取值走 config/verify.yaml 的 r2.endpoint
+      REPO_A_PAT: ${{ secrets.REPO_A_PAT }}
+      # site_repo 的事实源是 config/verify.yaml（corenova.config 允许 SITE_REPO 覆盖）；
+      # 这里不注入空值，否则会把配置里的真实仓库名覆盖成空 → 误判"未配置"。
+    steps:
+      - name: Checkout Repo C
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      # Gate 复核 + 组装 payload：形状严格照 repo-structure.md §4.1
+      # 逻辑放 scripts/verify/publish_site_payload.py（工作流里塞长 python 无法本地测）
+      - name: Build dispatch payload from published state
+        id: payload
+        run: python scripts/verify/publish_site_payload.py \
+              --app "${{ inputs.app_name }}" \
+              --payload-file "${RUNNER_TEMP}/payload.json"
+
+      - name: 未配置跨仓凭据 → 明确跳过（引导期正常）
+        id: send
+        env:
+          REPO: ${{ steps.payload.outputs.repo }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REPO_A_PAT:-}" ] || [ -z "${REPO:-}" ]; then
+            echo "::warning::未配置 REPO_A_PAT（或 SITE_REPO 为空）→ 跳过 repository_dispatch。"
+            echo "::warning::引导期属预期：请手工触发 Repo A 的 build-site，或配置 REPO_A_PAT（需目标仓 workflow 写权限）。"
+            echo "sent=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # 与 repo-structure.md §4.1 完全一致的调用形状
+          curl -sS -f -L -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${REPO_A_PAT}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/dispatches" \
+            --data "@${RUNNER_TEMP}/payload.json"
+          echo "sent=true" >> "$GITHUB_OUTPUT"
+          echo "dispatch verified-update → ${REPO}"
+
+      - name: Job summary
+        if: always()
+        # 表达式一律先进 env，再在 shell 里引用 "$VAR"：
+        # 直接把 ${{ }} 插进 [ ] / echo 会破坏引号，也是注入面
+        env:
+          REPO: ${{ steps.payload.outputs.repo }}
+          APPS: ${{ steps.payload.outputs.apps }}
+          SENT: ${{ steps.send.outputs.sent }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Publish Site"
+            echo ""
+            echo "- 后端：\`${VERIFIED_BACKEND}\`"
+            echo "- 通知目标：\`${REPO:-（未配置 site_repo）}\`"
+            echo "- apps：\`${APPS:-（未产出）}\`"
+            echo "- 已发送：**${SENT:-false}**"
+            if [ "${SENT:-}" != "true" ]; then
+              echo ""
+              echo "> 未发送 = 缺少 REPO_A_PAT 或 site_repo。数据已在生效后端里，前端可手工重建。"
+            fi
+            if [ -n "${REASON:-}" ]; then
+              echo "- 人工原因：${REASON}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

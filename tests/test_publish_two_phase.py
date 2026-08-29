@@ -1,0 +1,226 @@
+"""两阶段提交与投影一致性的行为测试（verification-manifest.md §6 / §4）。
+
+关键断言：上传探测未通过时 **绝不** 写 current.json —— 这是整个发布门禁的落点。
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+
+import pytest
+
+from corenova import manifest as mf
+from corenova import publish
+from corenova.backend import DirBackend
+from corenova.config import Config
+
+LOCAL_TRUE = {
+    "compose_started": True,
+    "container_healthy": True,
+    "health_check_passed": True,
+    "tests_passed": True,
+    "screenshots_generated": True,
+    "required_platform_contract_valid": True,
+}
+
+
+class Cfg:
+    """最小 config 替身：只暴露 publish 需要的字段。"""
+
+    verified_backend = "dir"
+    r2_public_base_url = ""
+    region = "us-east-1"
+    architecture = "x86_64"
+    base_ami_source = "public"
+
+
+def sample_manifest(**over) -> dict:
+    m = {
+        "schema_version": "1.0",
+        "verification_id": "ghost-v6.61.0-20260829-001",
+        "app": "ghost",
+        "app_version": "v6.61.0",
+        "verification_run_id": "100",
+        "verified_at": "2026-08-29T10:00:00Z",
+        "_strategy": "release_tag",
+        "checks": {**LOCAL_TRUE, "screenshots_uploaded": False, "report_uploaded": False,
+                   "verification_manifest_uploaded": False},
+        "verification": {"application": "passed", "platform": "referenced", "tests": "passed"},
+        "container": {"image": "ghost:6.61.0-alpine", "digest": "sha256:aaa",
+                      "manifest_digest": "sha256:bbb", "platform": "linux/amd64"},
+        "platform": {"platform_verification_id": "plat-x", "ami_id": "ami-0abc",
+                     "base_ami_source": "public", "source_ami_name": "ubuntu-noble-24.04-amd64-server-*",
+                     "region": "us-east-1", "architecture": "x86_64"},
+        "artifacts": {"screenshots": [
+            {"scenario": "home", "file": "home.png", "url": "/screenshots/ghost/v6.61.0/home.png",
+             "caption": {"en": "Home", "zh": "首页"}}],
+            "report_url": "", "workflow_run_url": ""},
+        "website": {
+            "app": "ghost", "app_version": "v6.61.0",
+            "verification_id": "ghost-v6.61.0-20260829-001", "verification_run_id": "100",
+            "verified_at": "2026-08-29T10:00:00Z", "platform_verification_id": "plat-x",
+            "ami_id": "ami-0abc", "region": "us-east-1", "architecture": "x86_64",
+            "health": "passed", "status": "verified",
+            "screenshots_order": ["home"],
+            "screenshots": [
+                {"scenario": "home", "file": "home.png",
+                 "url": "/screenshots/ghost/v6.61.0/home.png", "caption": {"en": "Home", "zh": "首页"}}],
+            "deploy": {"docker_image": "ghost:6.61.0-alpine", "regions": ["us-east-1"],
+                       "instance_type": "t3.small", "container_port": 2368,
+                       "launch_url": "https://ghost.us-east-1.corenovalaunch.app",
+                       "documentation_url": "https://ghost.org/docs/"},
+            "release": {"type": "initial", "previous_version": "", "type_evidence": "rule1"},
+        },
+    }
+    m["website"].update(over.pop("website", {}))
+    m.update(over)
+    return m
+
+
+@pytest.fixture
+def shots(tmp_path: Path) -> Path:
+    d = tmp_path / "screenshots"
+    d.mkdir()
+    (d / "home.png").write_bytes(b"\x89PNG fake")
+    return d
+
+
+def test_publish_commit_point_writes_all_three(tmp_path, shots):
+    out = tmp_path / "data"
+    backend = DirBackend(out)
+    m = sample_manifest()
+    res = publish.publish(backend, Cfg(), m, shots, "<html/>")
+
+    assert res.current_written and res.committed
+    assert all(m["checks"][c] for c in mf.CHECKS), m["checks"]
+    current = json.loads((out / "verified/ghost/current.json").read_text())
+    version = json.loads((out / "verified/ghost/versions/v6.61.0.json").read_text())
+    index = json.loads((out / "verified/index.json").read_text())
+
+    # current.json 必须逐字段等于 Manifest 的 website 段（不增不减）
+    assert current == version["website"]
+    assert index["apps"][0]["verification_id"] == m["verification_id"]
+    assert (out / "screenshots/ghost/v6.61.0/home.png").exists()
+    assert (out / "reports/ghost-v6.61.0-20260829-001.html").exists()
+    # 上传成功后 report_url 才被回填（P2 之后才知道键名）
+    assert current["report_url"] == "/reports/ghost-v6.61.0-20260829-001.html"
+
+
+def test_missing_screenshot_blocks_commit(tmp_path, shots):
+    """截图对象探测不通过 → 只留占位记录，current.json 不得出现。"""
+    out = tmp_path / "data"
+    backend = DirBackend(out)
+    m = sample_manifest()
+    shots_file = shots / "home.png"
+    shots_file.unlink()  # 模拟上传后探测失败
+
+    res = publish.publish(backend, Cfg(), m, shots, "<html/>")
+    assert not res.current_written
+    assert res.checks["screenshots_uploaded"] is False
+
+    version = json.loads((out / "verified/ghost/versions/v6.61.0.json").read_text())
+    assert version["checks"]["screenshots_uploaded"] is False
+    assert not (out / "verified/ghost/current.json").exists()
+    assert not (out / "verified/index.json").exists()
+
+
+def test_local_gate_failure_writes_nothing(tmp_path, shots):
+    out = tmp_path / "data"
+    backend = DirBackend(out)
+    m = sample_manifest()
+    m["checks"]["health_check_passed"] = False
+    res = publish.publish(backend, Cfg(), m, shots, "<html/>")
+    assert not res.current_written
+    assert list(out.rglob("*.json")) == [], "P0 未过时不得产生任何写入"
+
+
+def test_scratch_keys_never_uploaded(tmp_path, shots):
+    out = tmp_path / "data"
+    backend = DirBackend(out)
+    publish.publish(backend, Cfg(), sample_manifest(), shots, "<html/>")
+    version = json.loads((out / "verified/ghost/versions/v6.61.0.json").read_text())
+    assert not [k for k in version if k.startswith("_")], "契约外的临时键泄漏到事实源"
+    current = json.loads((out / "verified/ghost/current.json").read_text())
+    assert not [k for k in current if k.startswith("_")]
+
+
+def test_reverify_same_day_bumps_seq(tmp_path, shots):
+    out = tmp_path / "data"
+    backend = DirBackend(out)
+    first = sample_manifest()
+    publish.publish(backend, Cfg(), first, shots, "<html/>")
+
+    second = sample_manifest(verification_run_id="101")  # 另一次运行
+    res = publish.publish(backend, Cfg(), second, shots, "<html/>")
+    assert second["verification_id"].endswith("-002"), second["verification_id"]
+    assert res.current_written
+    index = json.loads((out / "verified/index.json").read_text())
+    assert index["apps"][0]["verification_id"].endswith("-002")
+
+
+# ------------------------------------------------------------------ 版本覆盖保护
+
+
+def test_old_version_cannot_overwrite_current(tmp_path, shots):
+    out = tmp_path / "data"
+    backend = DirBackend(out)
+    cfg = Cfg()
+    publish.publish(backend, cfg, sample_manifest(), shots, "<html/>")
+
+    older = sample_manifest(app_version="v6.60.0",
+                            verification_id="ghost-v6.60.0-20260829-001")
+    older["website"]["app_version"] = "v6.60.0"
+    older["website"]["verification_id"] = older["verification_id"]
+    res = publish.publish(backend, cfg, older, shots, "<html/>")
+    assert not res.current_written
+    assert any("版本覆盖保护" in n for n in res.notes), res.notes
+    current = json.loads((out / "verified/ghost/current.json").read_text())
+    assert current["app_version"] == "v6.61.0"
+
+
+def test_non_semver_falls_back_to_run_id(tmp_path):
+    cfg = DirBackend(tmp_path)
+    from corenova.backend import DirBackend as DB
+
+    db = DB(tmp_path)
+    db.put("verified/ghost/current.json",
+           json.dumps({"app_version": "main", "verification_run_id": "500"}).encode())
+    ok, why = publish.may_update_current(cfg, "ghost", "main", "400", "git_branch")
+    assert not ok and "不新于" in why
+    ok2, _ = publish.may_update_current(cfg, "ghost", "main", "600", "git_branch")
+    assert ok2
+    ok3, _ = publish.may_update_current(cfg, "ghost", "main", "600", "git_branch", force=True)
+    assert ok3
+
+
+# ------------------------------------------------------------------ 投影断言
+
+
+def test_projection_drift_detected():
+    m = sample_manifest()
+    m["website"]["ami_id"] = "ami-drifted"
+    with pytest.raises(AssertionError, match="漂移"):
+        mf.assert_projection(m)
+
+
+def test_health_must_be_projection():
+    m = sample_manifest()
+    m["website"]["health"] = "failed"
+    with pytest.raises(AssertionError):
+        mf.assert_projection(m)
+
+
+def test_screenshot_order_must_match():
+    m = sample_manifest()
+    m["website"]["screenshots_order"] = ["admin"]
+    with pytest.raises(AssertionError):
+        mf.assert_projection(m)
+
+
+def test_config_defaults_present():
+    cfg = Config.load()
+    assert cfg.region == "us-east-1" and cfg.architecture == "x86_64"
+    assert cfg.base_ami_source == "public"
+    assert cfg.ami_ssm_parameter().startswith("/aws/service/")

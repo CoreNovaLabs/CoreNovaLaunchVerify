@@ -1,0 +1,332 @@
+"""Load `apps/{app}.yaml` and enforce app-schema.md §5 (15 rules) + app-profiles.md.
+
+The validator is deliberately self-contained: Repo C's CI must be able to reject a bad
+registration before any Docker / AWS / network work happens.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from . import profiles
+from .util import strip_v
+
+ALLOWED_COMPOSE_VARS = {
+    "CORENOVA_APP_IMAGE",
+    "CORENOVA_APP_IMAGE_REF",
+    "CORENOVA_CONTAINER_PORT",
+    "CORENOVA_HOST_PORT",
+    "CORENOVA_APP_URL",
+    "CORENOVA_DATA_DIR",
+}
+
+NAME_RE = re.compile(r"^[a-z0-9-]+$")
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+TEMPLATE_VAR_RE = re.compile(r"\{([a-zA-Z_]+)\}")
+VERSION_IN_TAG_RE = re.compile(r"\d+\.\d+")
+MOBILE_TAGS = {"latest", "stable", "main", "edge", "nightly", "master"}
+
+
+@dataclass
+class AppSpec:
+    name: str
+    path: Path
+    raw: str
+    data: dict[str, Any] = field(default_factory=dict)
+
+    # -- convenience accessors (contract paths) ------------------------------
+    def g(self, dotted: str, default: Any = None) -> Any:
+        cur: Any = self.data
+        for part in dotted.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                return default
+            cur = cur[part]
+        return cur
+
+    @property
+    def app_type(self) -> str:
+        return self.g("app.app_type", "")
+
+    @property
+    def container_port(self) -> int:
+        return int(self.g("deploy.container_port", 0))
+
+    @property
+    def source_repo(self) -> str:
+        return self.g("source.repo", "")
+
+    @property
+    def version_strategy(self) -> str:
+        return self.g("source.version_strategy", "")
+
+    @property
+    def scenarios(self) -> list[dict[str, Any]]:
+        return self.g("tests.scenarios") or []
+
+    @property
+    def startup_timeout(self) -> int:
+        return int(
+            self.g("health_check.startup_timeout_seconds")
+            or profiles.startup_timeout(self.app_type)
+        )
+
+    def size(self) -> tuple[str, str, str]:
+        return profiles.resolve_size(self.app_type, self.g("deployment.size"))
+
+    def resources(self) -> tuple[str, int]:
+        """Effective (instance_type, disk_gb): explicit per-dimension override wins,
+        otherwise derived from the size ladder (app-profiles.md §5 方式 B)."""
+        eff_size, min_size, _default = self.size()
+        # 越界档位（如 database 选 small）由 §5 规则 10 报错，这里退回地板档推导以免崩在 None 上
+        base = profiles.derive(self.app_type, eff_size) or profiles.derive(self.app_type, min_size)
+        base_instance, base_disk = base
+        min_instance, min_disk = profiles.derive(self.app_type, min_size)
+        instance = self.g("deploy.instance_type") or self.g("resources.instance_type") or base_instance
+        disk = self.g("deploy.disk_gb") or self.g("resources.disk_gb") or base_disk
+        # 低于 min_size 地板必须带 `# override: <reason>`
+        if _instance_rank(instance) < _instance_rank(min_instance) or int(disk) < min_disk:
+            if "override:" not in self.raw:
+                raise ValueError(
+                    f"app-schema §5 规则 10：{instance}/{disk}GB 低于 {self.app_type} 的 "
+                    f"min_size 地板（{min_instance}/{min_disk}GB），必须写 `# override: <reason>`"
+                )
+        return str(instance), int(disk)
+
+    def launch_url(self, region: str) -> str:
+        tpl = self.g("deployment.launch_url_template") or "https://{app}.{region}.corenovalaunch.app"
+        return tpl.format(app=self.name, region=region)
+
+
+def _instance_rank(instance: str) -> int:
+    order = ["t3.nano", "t3.micro", "t3.small", "t3.medium", "t3.large", "t3.xlarge", "t3.2xlarge"]
+    return order.index(instance) if instance in order else len(order)
+
+
+def load(name: str, root: Path) -> AppSpec:
+    path = root / "apps" / f"{name}.yaml"
+    if not path.exists():
+        raise FileNotFoundError(f"应用注册文件不存在：{path}")
+    raw = path.read_text(encoding="utf-8")
+    spec = AppSpec(name=name, path=path, raw=raw, data=yaml.safe_load(raw) or {})
+    return spec
+
+
+def all_apps(root: Path) -> list[str]:
+    return sorted(p.stem for p in (root / "apps").glob("*.yaml"))
+
+
+# --------------------------------------------------------------------------- validation
+
+
+def validate(spec: AppSpec, root: Path, platform_region: str) -> list[str]:
+    """Return a list of human-readable violations (empty == valid)."""
+    e: list[str] = []
+    g = spec.g
+
+    # 1 文件名 == app.name
+    if g("app.name") != spec.name:
+        e.append(f"规则1: app.name={g('app.name')!r} 必须等于文件名 {spec.name!r}")
+    if not NAME_RE.match(spec.name):
+        e.append(f"规则1: app.name {spec.name!r} 不匹配 ^[a-z0-9-]+$")
+
+    # 2 双语齐全
+    for loc in ("en", "zh"):
+        for f in ("display_name", "description"):
+            if not g(f"app.i18n.{loc}.{f}"):
+                e.append(f"规则2: app.i18n.{loc}.{f} 必填")
+    if not str(g("app.icon", "")).startswith("/"):
+        e.append("规则2: app.icon 必须以 / 开头（指向 Repo A 静态资源）")
+
+    if g("app.category") not in profiles.CATEGORIES:
+        e.append(f"规则: app.category {g('app.category')!r} 不在枚举内")
+    if g("app.app_type") not in profiles.TYPES:
+        e.append(f"规则9: app.app_type {g('app.app_type')!r} 不在枚举内")
+
+    # source
+    if not re.match(r"^[^/]+/[^/]+$", str(g("source.repo", ""))):
+        e.append(f"规则: source.repo {g('source.repo')!r} 必须是 owner/name")
+    if g("source.version_strategy") not in profiles.VERSION_STRATEGIES:
+        e.append(f"规则: source.version_strategy {g('source.version_strategy')!r} 不在枚举内")
+
+    # 3 compose 文件与变量纪律
+    compose_rel = g("deploy.compose_file")
+    if not compose_rel:
+        e.append("规则3: deploy.compose_file 必填")
+    else:
+        compose = root / compose_rel
+        if not compose.exists():
+            e.append(f"规则3: compose 文件不存在 {compose_rel}")
+        else:
+            e.extend(_validate_compose(compose.read_text(encoding="utf-8")))
+
+    # 4 image_tag_template（§3.1 六条）
+    e.extend(_validate_tag_template(spec))
+
+    # 5 deploy.instance_type 与 resources.instance_type 同时出现必须相等
+    a, b = g("deploy.instance_type"), g("resources.instance_type")
+    if a and b and a != b:
+        e.append(f"规则5: deploy.instance_type={a} 与 resources.instance_type={b} 冲突")
+
+    # 6 health_check
+    hc_endpoint = str(g("health_check.endpoint", ""))
+    if not hc_endpoint.startswith("/"):
+        e.append(f"规则6: health_check.endpoint {hc_endpoint!r} 必须以 / 开头")
+    status = g("health_check.expected_status")
+    if not isinstance(status, int) or not ((200 <= status < 300) or (300 <= status < 400)):
+        e.append(f"规则6: health_check.expected_status={status!r} 必须为 2xx/3xx")
+    if g("health_check.method", "GET") == "POST" and not g("health_check.body"):
+        e.append("规则6: method=POST 时 health_check.body 必须非空")
+
+    # 7 + 14 regions
+    regions = g("deployment.regions") or []
+    if not regions:
+        e.append("规则7: deployment.regions 非空必填")
+    elif regions != [platform_region]:
+        e.append(f"规则14: v1 单区域，deployment.regions={regions} 必须等于 [{platform_region!r}]")
+
+    # 8 scenarios ↔ screenshots_order ↔ Manifest
+    slugs = [str(s.get("slug", "")) for s in spec.scenarios]
+    if len(slugs) != len(set(slugs)):
+        e.append("规则8: tests.scenarios[].slug 重复")
+    for s in spec.scenarios:
+        slug = str(s.get("slug", ""))
+        if not SLUG_RE.match(slug):
+            e.append(f"规则8: slug {slug!r} 必须匹配 ^[a-z0-9][a-z0-9-]*$（禁止中文/空格）")
+        if not s.get("url", "").startswith("/"):
+            e.append(f"规则8: scenario {slug!r} 的 url 必须以 / 开头")
+        for loc in ("en", "zh"):
+            if not (s.get("caption") or {}).get(loc):
+                e.append(f"规则8: scenario {slug!r} 缺少 caption.{loc}")
+    order = g("website.screenshots_order") or []
+    if spec.scenarios and sorted(order) != sorted(slugs):
+        e.append(f"规则8: website.screenshots_order={order} 与 scenarios slug={slugs} 不一致")
+
+    # 10 / 11 尺寸阶梯
+    try:
+        eff_size, min_size, _default = spec.size()
+    except KeyError:
+        eff_size = min_size = None
+    if eff_size not in profiles.SIZE_ORDER:
+        e.append(f"规则10: deployment.size={g('deployment.size')!r} 不在 small/medium/large/xlarge 内")
+    elif eff_size not in profiles.LADDER[spec.app_type]:
+        e.append(f"规则10: {spec.app_type} 无 {eff_size} 档（地板 {min_size}）")
+    elif profiles.rank(eff_size) < profiles.rank(min_size):
+        e.append(f"规则10: size={eff_size} 低于 {spec.app_type} 的 min_size={min_size}")
+    try:
+        spec.resources()
+    except ValueError as exc:
+        e.append(str(exc))
+
+    # 12 version_assertion
+    va = g("health_check.version_assertion")
+    if va:
+        kind = va.get("kind")
+        if kind not in profiles.ASSERTION_KINDS:
+            e.append(f"规则12: version_assertion.kind={kind!r} 不在枚举 {profiles.ASSERTION_KINDS}")
+        else:
+            required = {
+                "env": ["name"], "label": ["name"], "header": ["name"],
+                "api_json_path": ["path", "json_pointer"], "exec_command": ["command"],
+            }[kind]
+            for r in required:
+                if not va.get(r):
+                    e.append(f"规则12: version_assertion.kind={kind} 缺字段 {r}")
+        expected = str(va.get("expected", ""))
+        if not expected:
+            e.append("规则12: version_assertion.expected 必填")
+        for var in TEMPLATE_VAR_RE.findall(expected):
+            if var not in ("version", "version_no_v"):
+                e.append(f"规则12: version_assertion.expected 含非法占位符 {{{var}}}")
+        if va.get("match", "exact") not in ("exact", "prefix"):
+            e.append("规则12: version_assertion.match 必须为 exact|prefix")
+
+    # 13 features 双语
+    for i, f in enumerate(g("website.features") or []):
+        if not (f.get("en") and f.get("zh")):
+            e.append(f"规则13: website.features[{i}] 必须同时含 en 与 zh")
+
+    # 15 release_type_override 需 reason
+    rto = g("release_type_override")
+    if rto:
+        if rto not in profiles.RELEASE_TYPES:
+            e.append(f"规则15: release_type_override={rto!r} 不在枚举内")
+        if "reason:" not in spec.raw:
+            e.append("规则15: release_type_override 非空必须带 `# reason:` 注释")
+
+    # tests 目录
+    tdir = g("tests.predefined_dir")
+    if not tdir:
+        e.append("规则: tests.predefined_dir 必填")
+    elif not (root / tdir).is_dir():
+        e.append(f"规则: tests.predefined_dir 目录不存在 {tdir}")
+
+    if g("website.featured") is None:
+        e.append("规则: website.featured 必填 boolean")
+    if not g("website.tags"):
+        e.append("规则: website.tags 非空必填")
+    return e
+
+
+def _validate_compose(text: str) -> list[str]:
+    e: list[str] = []
+    vars_used = set(re.findall(r"\$\{([A-Z_]+)(?::-[^\}]*)?\}", text))
+    unknown = sorted(vars_used - ALLOWED_COMPOSE_VARS)
+    if unknown:
+        e.append(f"规则3: compose 引用未声明变量 {unknown}")
+    for m in re.finditer(r"^\s*image:\s*(.+?)\s*$", text, re.M):
+        if m.group(1) != "${CORENOVA_APP_IMAGE}":
+            e.append(f"规则3: compose image 必须是 ${{CORENOVA_APP_IMAGE}}，实为 {m.group(1)!r}")
+    for m in re.finditer(r"^\s*-\s*[\"']?(\$\{[A-Z_]+\}|\d+):(\$\{[A-Z_]+\}|\d+)[\"']?\s*$", text, re.M):
+        if not (m.group(1) == "${CORENOVA_HOST_PORT}" and m.group(2) == "${CORENOVA_CONTAINER_PORT}"):
+            e.append(f"规则3: compose 端口必须是 ${{CORENOVA_HOST_PORT}}:${{CORENOVA_CONTAINER_PORT}}，实为 {m.group(0).strip()}")
+    for m in re.finditer(r"https?://[^\s\"']*/?\:(\d{2,5})", text):
+        e.append(f"规则3: compose 含硬编码带端口 URL（应改用 ${{CORENOVA_APP_URL}}）：{m.group(0)}")
+    return e
+
+
+def _validate_tag_template(spec: AppSpec) -> list[str]:
+    e: list[str] = []
+    g = spec.g
+    base = str(g("deploy.docker_image", ""))
+    tpl = g("deploy.image_tag_template")
+    if ":" in base:
+        e.append(f"规则: deploy.docker_image {base!r} 必须是镜像基名（不含 : tag），tag 由 image_tag_template 渲染")
+    if not tpl:
+        e.append("规则4: deploy.image_tag_template 必填（禁止移动 tag 充当被验证镜像）")
+        return e
+    for var in TEMPLATE_VAR_RE.findall(tpl):
+        if var not in ("version", "version_no_v"):
+            e.append(f"规则4(§3.1.1): image_tag_template 含非法占位符 {{{var}}}，只允许 {{version}} / {{version_no_v}}")
+    # 以样例版本渲染，验证 §3.1.2/3/4
+    try:
+        rendered = render_image_ref(spec, "5.75.0")
+    except (KeyError, ValueError, IndexError) as exc:
+        e.append(f"规则4(§3.1.1): image_tag_template={tpl!r} 无法渲染：{type(exc).__name__}: {exc}")
+        return e
+    tag = rendered.split(":")[-1]
+    if not VERSION_IN_TAG_RE.search(tag):
+        e.append(f"规则4(§3.1.2): 渲染结果 {rendered!r} 的 tag 不含点分版本号，属移动 tag")
+    if tag in MOBILE_TAGS or re.fullmatch(r"\d+", tag):
+        e.append(f"规则4(§3.1.3): 渲染结果 tag={tag!r} 属移动语义或仅 major 号")
+    if tpl.split(":")[0] != base:
+        e.append(
+            f"规则4(§3.1.4): image_tag_template 的仓库部分 {tpl.split(':')[0]!r} "
+            f"与 deploy.docker_image={base!r} 不一致"
+        )
+    if spec.version_strategy in ("release_tag", "semver_latest") and not TEMPLATE_VAR_RE.search(tpl):
+        e.append(f"规则4(§3.1.5): version_strategy={spec.version_strategy} 时模板必须含版本占位符")
+    if spec.version_strategy == "release_tag" and (base.endswith(":latest") or rendered.endswith(":latest")):
+        e.append("规则4: version_strategy=release_tag 时镜像引用不得为 :latest")
+    return e
+
+
+def render_image_ref(spec: AppSpec, app_version: str) -> str:
+    """Render `deploy.image_tag_template` for a concrete app_version -> full image ref."""
+    return spec.g("deploy.image_tag_template").format(
+        version=app_version, version_no_v=strip_v(app_version)
+    )

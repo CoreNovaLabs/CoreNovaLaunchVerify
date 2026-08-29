@@ -1,0 +1,13 @@
+# Python >= 3.10
+# Core
+PyYAML>=6.0
+requests>=2.31
+packaging>=23.0
+
+# AWS（仅 Golden Verification / Platform Contract 需要）
+boto3>=1.34
+
+# Testing
+pytest>=7.4
+pytest-timeout>=2.2
+playwright>=1.40

@@ -1,0 +1,218 @@
+"""app-schema.md §5 十五条的负向用例：每种越界都必须被拒。"""
+
+from __future__ import annotations
+
+import copy
+from pathlib import Path
+
+import pytest
+import yaml
+
+from corenova import appspec
+from corenova.appspec import AppSpec
+
+BASE_APP = "ghost"
+
+GOOD_SPEC: dict = {
+    "app": {
+        "name": BASE_APP,
+        "category": "cms",
+        "app_type": "stateful_app",
+        "icon": "/icons/ghost.svg",
+        "i18n": {
+            "en": {"display_name": "Ghost Blog", "description": "Publishing platform"},
+            "zh": {"display_name": "Ghost 博客", "description": "发布平台"},
+        },
+    },
+    "source": {"repo": "TryGhost/Ghost", "version_strategy": "release_tag"},
+    "deploy": {
+        "docker_image": "ghost",
+        "image_tag_template": "ghost:{version_no_v}-alpine",
+        "container_port": 2368,
+        "compose_file": f"apps/{BASE_APP}/docker-compose.yml",
+    },
+    "health_check": {
+        "endpoint": "/",
+        "expected_status": 200,
+        "version_assertion": {
+            "kind": "exec_command",
+            "command": "node -p \"require('/usr/src/ghost/package.json').version\"",
+            "expected": "{version_no_v}",
+        },
+    },
+    "tests": {
+        "predefined_dir": f"apps/{BASE_APP}/tests",
+        "scenarios": [
+            {"slug": "home", "url": "/", "caption": {"en": "Home", "zh": "首页"}},
+            {"slug": "admin", "url": "/ghost/", "caption": {"en": "Admin", "zh": "后台"}},
+        ],
+    },
+    "deployment": {"size": "small", "regions": ["us-east-1"]},
+    "website": {
+        "featured": True,
+        "screenshots_order": ["home", "admin"],
+        "tags": ["blog"],
+        "features": [{"en": "Automated testing", "zh": "自动化测试"}],
+    },
+}
+
+GOOD_COMPOSE = """services:
+  ghost:
+    image: ${CORENOVA_APP_IMAGE}
+    ports:
+      - "${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}"
+    environment:
+      url: ${CORENOVA_APP_URL}
+    volumes:
+      - ${CORENOVA_DATA_DIR}:/var/lib/ghost/content
+"""
+
+
+def make(tmp_path: Path, mutate=None, compose: str = GOOD_COMPOSE) -> AppSpec:
+    spec_data = copy.deepcopy(GOOD_SPEC)
+    if mutate:
+        mutate(spec_data)
+    app_dir = tmp_path / "apps" / BASE_APP
+    (app_dir / "tests").mkdir(parents=True)
+    raw = yaml.safe_dump(spec_data, allow_unicode=True)
+    path = tmp_path / "apps" / f"{BASE_APP}.yaml"
+    path.write_text(raw, encoding="utf-8")
+    (app_dir / "docker-compose.yml").write_text(compose, encoding="utf-8")
+    spec = AppSpec(name=BASE_APP, path=path, raw=raw, data=yaml.safe_load(raw))
+    return spec
+
+
+def errors(tmp_path: Path, mutate=None, compose: str = GOOD_COMPOSE) -> list[str]:
+    spec = make(tmp_path, mutate, compose)
+    return appspec.validate(spec, tmp_path, "us-east-1")
+
+
+def test_good_spec_passes(tmp_path):
+    assert errors(tmp_path) == []
+
+
+def test_rule4_mobile_tag_rejected(tmp_path):
+    errs = errors(tmp_path, lambda d: d["deploy"].__setitem__("image_tag_template", "ghost:5-alpine"))
+    assert any("§3.1.2" in e for e in errs), errs
+
+
+def test_rule4_latest_rejected(tmp_path):
+    errs = errors(tmp_path, lambda d: d["deploy"].__setitem__("image_tag_template", "ghost:latest"))
+    assert any("image_tag_template" in e or "§3.1" in e for e in errs), errs
+
+
+def test_rule4_unknown_placeholder_rejected(tmp_path):
+    errs = errors(tmp_path, lambda d: d["deploy"].__setitem__("image_tag_template", "ghost:{sha}"))
+    assert any("非法占位符" in e for e in errs), errs
+
+
+def test_rule4_base_mismatch_rejected(tmp_path):
+    def m(d):
+        d["deploy"]["image_tag_template"] = "ghosty:{version_no_v}"
+
+    assert any("§3.1.4" in e for e in errors(tmp_path, m))
+
+
+def test_rule3_hardcoded_image_and_port_rejected(tmp_path):
+    bad = """services:
+  ghost:
+    image: ghost:5-alpine
+    ports:
+      - "2368:2368"
+    environment:
+      url: http://localhost:2368
+"""
+    errs = errors(tmp_path, compose=bad)
+    assert any("image" in e for e in errs), errs
+    assert any("端口" in e for e in errs), errs
+    assert any("硬编码带端口 URL" in e for e in errs), errs
+
+
+def test_rule3_unknown_compose_variable_rejected(tmp_path):
+    bad = GOOD_COMPOSE + "    restart: ${SOMETHING_ELSE}\n"
+    assert any("未声明变量" in e for e in errors(tmp_path, compose=bad))
+
+
+def test_rule8_non_ascii_slug_rejected(tmp_path):
+    def m(d):
+        d["tests"]["scenarios"][0]["slug"] = "首页加载"
+
+    assert any("slug" in e for e in errors(tmp_path, m))
+
+
+def test_rule8_order_mismatch_rejected(tmp_path):
+    def m(d):
+        d["website"]["screenshots_order"] = ["admin"]
+
+    assert any("screenshots_order" in e for e in errors(tmp_path, m))
+
+
+def test_rule14_multi_region_rejected(tmp_path):
+    def m(d):
+        d["deployment"]["regions"] = ["us-east-1", "eu-west-1"]
+
+    assert any("规则14" in e for e in errors(tmp_path, m))
+
+
+def test_rule10_database_small_rejected(tmp_path):
+    def m(d):
+        d["app"]["app_type"] = "database"
+
+    assert any("无 small 档" in e or "min_size" in e for e in errors(tmp_path, m))
+
+
+def test_rule10_below_floor_needs_override(tmp_path):
+    def m(d):
+        d["deploy"]["disk_gb"] = 5  # 低于 stateful_app/small 的 30GB 地板
+
+    assert any("override:" in e for e in errors(tmp_path, m))
+
+
+def test_rule10_above_floor_is_free(tmp_path):
+    def m(d):
+        d["deployment"]["size"] = "xlarge"
+
+    assert errors(tmp_path, m) == []
+
+
+def test_rule12_assertion_missing_field_rejected(tmp_path):
+    def m(d):
+        d["health_check"]["version_assertion"] = {"kind": "env", "expected": "{version}"}
+
+    assert any("缺字段 name" in e for e in errors(tmp_path, m))
+
+
+def test_rule13_features_need_both_locales(tmp_path):
+    def m(d):
+        d["website"]["features"] = [{"en": "Only english"}]
+
+    assert any("规则13" in e for e in errors(tmp_path, m))
+
+
+def test_rule15_override_needs_reason(tmp_path):
+    def m(d):
+        d["release_type_override"] = "security_update"
+
+    assert any("规则15" in e for e in errors(tmp_path, m))
+
+
+def test_rule1_name_must_match_filename(tmp_path):
+    def m(d):
+        d["app"]["name"] = "ghost-blog"
+
+    assert any("规则1" in e for e in errors(tmp_path, m))
+
+
+def test_launch_url_and_resources_derive(tmp_path):
+    spec = make(tmp_path)
+    assert spec.resources() == ("t3.small", 30)
+    assert spec.launch_url("us-east-1") == "https://ghost.us-east-1.corenovalaunch.app"
+
+
+@pytest.mark.parametrize("tpl,expect", [
+    ("ghost:{version_no_v}-alpine", "ghost:6.61.0-alpine"),
+    ("ghost:{version}", "ghost:v6.61.0"),
+])
+def test_tag_template_rendering(tmp_path, tpl, expect):
+    spec = make(tmp_path, lambda d: d["deploy"].__setitem__("image_tag_template", tpl))
+    assert appspec.render_image_ref(spec, "v6.61.0") == expect

@@ -1,0 +1,82 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 15 条）
+#
+# 关于 app_type 的选择说明（与 app-profiles.md §1 示例表的差异是有意为之）：
+# 示例表把 Ghost 归为 stateless_web（"状态在外部 DB"）。但 Ghost 官方镜像开箱即用形态是
+# 内嵌 SQLite（本 compose 即此形态），本地 content 目录必须持久化，因此按部署形态事实
+# 归为 stateful_app。若接入外部 MySQL 部署形态，应改为 stateless_web 并同步调整 size。
+
+app:
+  name: "ghost"
+  category: "cms"
+  app_type: "stateful_app"
+  icon: "/icons/ghost.svg"
+  i18n:
+    en:
+      display_name: "Ghost Blog"
+      description: "Open-source professional publishing platform"
+    zh:
+      display_name: "Ghost 博客"
+      description: "开源专业发布平台"
+
+source:
+  repo: "TryGhost/Ghost"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "ghost"
+  image_tag_template: "ghost:{version_no_v}-alpine"
+  container_port: 2368
+  compose_file: "apps/ghost/docker-compose.yml"
+  # instance_type / disk_gb 不写：由 deployment.size 推导（stateful_app / small = t3.small / 30GB）
+
+health_check:
+  # 就绪探针必须打**无需鉴权**的端点：/ghost/api/admin/site/ 属 admin API，未登录返回 401，
+  # 会把"应用已就绪"误判成"未就绪"。后台路径改由 apps/ghost/tests 预写测试覆盖。
+  endpoint: "/"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 180
+  version_assertion:
+    # 实测：ghost:6.61.0-alpine 内置 ENV GHOST_VERSION=6.61.0；该镜像无 OCI label，
+    # 且 6.x 已不存在 /usr/src/ghost/package.json（exec_command 会报 Cannot find module）
+    kind: "env"
+    name: "GHOST_VERSION"
+    expected: "{version_no_v}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/ghost/tests"
+  scenarios:
+    - slug: "home"
+      url: "/"
+      caption:
+        en: "Public site"
+        zh: "站点首页"
+    - slug: "admin"
+      url: "/ghost/"
+      caption:
+        en: "Admin console"
+        zh: "管理后台"
+
+deployment:
+  size: "small"
+  launch_url_template: "https://{app}.{region}.corenovalaunch.app"
+  documentation_url: "https://ghost.org/docs/"
+  regions: ["us-east-1"]
+
+website:
+  featured: true
+  screenshots_order: ["home", "admin"]
+  tags: ["blog", "cms", "publishing"]
+  features:
+    - en: "Automated testing before each release"
+      zh: "每次发布前自动化测试"
+    - en: "SQLite or MySQL, one-click CloudFormation deploy"
+      zh: "SQLite 或 MySQL，CloudFormation 一键部署"

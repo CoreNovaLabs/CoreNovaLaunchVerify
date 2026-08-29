@@ -1,0 +1,29 @@
+# CoreNova Launch · 验证与发布配置
+# 说明：本文件只放"链路怎么跑"，不放平台身份（那在 config/platform.yaml）
+
+# 事实源后端：dir（引导期本地 fixtures）| r2（Cloudflare R2）
+# 任一时刻只允许一个生效，禁止自动择优（repo-structure.md §4.2.1）
+verified_backend: dir
+
+# dir 后端输出目录（相对仓库根）。R2 后端时该目录仅作为审计副本
+output_dir: data
+
+r2:
+  bucket: ""                          # R2_BUCKET_NAME（secret 提供优先于此）
+  public_base_url: ""                 # R2_PUBLIC_BASE_URL，如 https://pub-xxxx.r2.dev
+  endpoint: ""                        # 可选：自定义 R2 S3 endpoint
+  # 凭据只从环境变量读：R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
+
+# 镜像仓库前缀改写（例如国内网络无法直连 Docker Hub，可设 docker.m.daocloud.io）
+# GitHub Actions runner 上留空即可直连
+registry_mirror: ""
+
+# 网站重建触发（publish-site.yml 用）；引导期可空 → 只写产物不发 dispatch
+site_repo: CoreNovaLabs/CoreNovaLaunchWebsite
+
+# 验证运行参数
+run:
+  host_port: 2368                     # 本机发布端口（被占用时用 --host-port 覆盖）
+  pull_policy: always                 # 验证必须拉到与被解析 digest 一致的内容
+  tests_timeout_seconds: 600
+  playwright_timeout_seconds: 120

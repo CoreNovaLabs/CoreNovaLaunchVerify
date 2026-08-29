@@ -1,0 +1,15 @@
+# 引导期 fixtures 输出：开发链路产物，不是事实源，不进 Git（repo-structure.md §4.2.1）
+data/
+!data/.gitkeep
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+ruff.toml.local
+
+# 本地凭据
+.env
+*.local

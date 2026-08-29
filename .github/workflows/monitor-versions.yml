@@ -1,0 +1,107 @@
+# monitor-versions.yml — L0 版本监控（verify-gate-design.md §3 / §10）
+#
+# 职责边界：本工作流**只发现版本并逐 app 扇出**，不自己跑验证。
+# 为什么必须逐 app 独立 run（workflow-state-machine.md §5）：并发组按 app 划分，
+# 一个 run 里跑多 app 会让不同 app 的验证在同一队列里互相串行（每 app 5–15 分钟）。
+# 比对与扇出逻辑都在 scripts/monitor/check_versions.py（可在 CI 外单测/复跑）。
+name: monitor-versions
+
+on:
+  schedule:
+    # 每 6h（§10 工作流清单）
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "只检查这一个应用（留空 = 全部 apps/*.yaml）"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "只比对版本，不真正扇出 application-verify"
+        type: boolean
+        required: false
+        default: false
+      allow_non_durable:
+        description: "后端无持久 current.json 时也照 initial 扇出（仅引导期手工首次验证用；定时任务别勾）"
+        type: boolean
+        required: false
+        default: false
+
+# 同一时刻只允许一轮监控；cancel-in-progress=false 避免半轮监控被打断后重复扇出
+concurrency:
+  group: monitor-versions
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write          # gh workflow run 扇出所需（最小化）
+
+jobs:
+  check:
+    name: 解析上游版本并与已发布版本比对
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # 生效后端必须显式指定，禁止"读不到 R2 就回退本地"（repo-structure.md §4.2.1）。
+      # 引导期 dir 后端的 data/ 在 runner 上是一次性的（不进 Git），因此监控只能报告不能扇出；
+      # 配好 VERIFIED_BACKEND=r2 + 三项 R2 secret 后，本工作流自动恢复完整能力（代码路径不变）。
+      VERIFIED_BACKEND: ${{ secrets.VERIFIED_BACKEND || 'dir' }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+      # R2 endpoint 不在此注入：§6 表里没有它，取值走 config/verify.yaml 的 r2.endpoint
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout Repo C
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Monitor versions（必要时逐 app 扇出）
+        id: monitor
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          ALLOW_NON_DURABLE: ${{ inputs.allow_non_durable }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          ARGS=(--all --json --trigger --workflow application-verify.yml
+                --ref "${{ github.ref_name }}"
+                --summary-file "${RUNNER_TEMP}/monitor-summary.md")
+          if [ -n "${APP_NAME}" ]; then ARGS+=(--app "${APP_NAME}"); fi
+          if [ "${DRY_RUN}" = "true" ]; then ARGS+=(--dry-run); fi
+          if [ "${ALLOW_NON_DURABLE}" = "true" ]; then ARGS+=(--allow-non-durable); fi
+          python scripts/monitor/check_versions.py "${ARGS[@]}"
+
+      # 扇出为 0 又没报错时最容易被误读成"一切正常"，所以把原因写进摘要
+      - name: Explain zero dispatch
+        if: always()
+        env:
+          DURABLE: ${{ steps.monitor.outputs.durable }}
+          HAS_UPDATES: ${{ steps.monitor.outputs.has_updates }}
+          APPS: ${{ steps.monitor.outputs.apps_to_verify }}
+        run: |
+          if [ "${DURABLE}" != "true" ]; then
+            echo "::warning::生效后端在本环境没有持久 current.json → 本轮只报告不扇出（避免每 6h 重复验证同一版本）。"
+            echo "::warning::恢复自动扇出：配置 VERIFIED_BACKEND=r2 + R2_* secrets；或手工 dispatch application-verify.yml 做首次验证。"
+          fi
+          if [ "${HAS_UPDATES}" = "true" ]; then
+            echo "已扇出：${APPS}"
+          else
+            echo "本轮无需验证（上游版本 == 已发布版本，或全部处于暂缓/失败状态）"
+          fi
+
+      - name: 失败提示
+        if: failure()
+        run: |
+          echo "::error::版本监控未完成：本轮不会扇出任何验证（宁可漏一轮，也不基于猜测的版本关系触发）。"
+          echo "请看上面的 JSON entries[].classification 区分是 GitHub API 限流（TRANSIENT）还是注册表结构问题。"

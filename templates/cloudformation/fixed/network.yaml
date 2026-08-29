@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# Long-form intrinsics ({Ref: X} / {Fn::Sub: ...}) are deliberate: they keep this file loadable by
+# a bare `yaml.safe_load`, so the CI gate can parse the templates without a CFN tag registry.
+Description: >
+  CoreNova Launch fixed network base (platform-contract.md §9 Network Stack, stack name
+  corenova-network). VPC + two public subnets + internet gateway + route table + the base security
+  group. The base SG deliberately has NO ingress on port 22: remote shell access goes through SSM
+  Session Manager (platform-contract.md §8). Re-deployable under one stack name; exported names are
+  prefixed so several environments can coexist in a region.
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Default: corenova
+    AllowedPattern: ^[a-z][a-z0-9-]*$
+    Description: Prefix of the exported output names, so a second environment can coexist.
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    Description: CIDR block of the CoreNova VPC.
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.42.0.0/20
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    Description: First public subnet CIDR (first availability zone of the region).
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.42.16.0/20
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    Description: Second public subnet CIDR (second availability zone of the region).
+  HttpIngressCidr:
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: ^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$
+    Description: >
+      Source range allowed to reach 80/443. Keep 0.0.0.0/0 for a public canary and for genuinely
+      public apps; narrow it (office or VPN CIDR) for a private deployment.
+  EnableIpv6Ingress:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Also open 80/443 to ::/0. Off by default: this VPC gets no IPv6 CIDR, so an IPv6 rule would
+      be review surface without being a capability.
+
+Conditions:
+  Ipv6Ingress: {Fn::Not: [{Fn::Equals: [{Ref: EnableIpv6Ingress}, "false"]}]}
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: {Ref: VpcCidr}
+      InstanceTenancy: default
+      # EnableDnsHostnames is what makes GetAtt Instance.PublicDnsName resolvable at all.
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: {Fn::Sub: "${StackPrefix}-network"}
+
+  IGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: {Fn::Sub: "${StackPrefix}-network-igw"}
+
+  IGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: {Ref: VPC}
+      InternetGatewayId: {Ref: IGateway}
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: {Ref: VPC}
+      Tags:
+        - Key: Name
+          Value: {Fn::Sub: "${StackPrefix}-network-public-rt"}
+
+  # DependsOn keeps the route creatable: a route to an IGW fails if CFN evaluates it before the
+  # gateway attachment exists.
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGatewayAttachment
+    Properties:
+      RouteTableId: {Ref: PublicRouteTable}
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: {Ref: IGateway}
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: {Ref: VPC}
+      CidrBlock: {Ref: PublicSubnetACidr}
+      AvailabilityZone: {Fn::Select: [0, {Fn::GetAZs: ""}]}
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: {Fn::Sub: "${StackPrefix}-network-public-a"}
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: {Ref: VPC}
+      CidrBlock: {Ref: PublicSubnetBCidr}
+      AvailabilityZone: {Fn::Select: [1, {Fn::GetAZs: ""}]}
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: {Fn::Sub: "${StackPrefix}-network-public-b"}
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: {Ref: PublicSubnetA}
+      RouteTableId: {Ref: PublicRouteTable}
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: {Ref: PublicSubnetB}
+      RouteTableId: {Ref: PublicRouteTable}
+
+  BaseSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: {Fn::Sub: "${StackPrefix}-base-sg"}
+      GroupDescription: CoreNova base SG - HTTP(S) in, all out, no SSH ingress
+      VpcId: {Ref: VPC}
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: {Ref: HttpIngressCidr}
+          Description: nginx plain HTTP (also serves the ACME challenge and the canary probe)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: {Ref: HttpIngressCidr}
+          Description: nginx TLS termination
+      SecurityGroupEgress:
+        # Explicit egress: stating it documents that apt, the Docker registry, SSM and CloudWatch
+        # endpoints must all be reachable for cfn-init to finish.
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: egress for apt, Docker registry pulls, SSM and CloudWatch endpoints
+      Tags:
+        - Key: Name
+          Value: {Fn::Sub: "${StackPrefix}-base-sg"}
+
+  BaseSGIpv6HttpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: Ipv6Ingress
+    Properties:
+      GroupId: {Ref: BaseSG}
+      IpProtocol: tcp
+      FromPort: 80
+      ToPort: 80
+      CidrIpv6: ::/0
+      Description: nginx HTTP over IPv6 (opt-in)
+
+  BaseSGIpv6HttpsIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: Ipv6Ingress
+    Properties:
+      GroupId: {Ref: BaseSG}
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIpv6: ::/0
+      Description: nginx HTTPS over IPv6 (opt-in)
+
+Outputs:
+  VpcId:
+    Description: VPC used by every CoreNova application and canary stack.
+    Value: {Ref: VPC}
+    Export:
+      Name: {Fn::Sub: "${StackPrefix}-network-VpcId"}
+
+  SubnetIds:
+    Description: Comma separated public subnet ids (two availability zones).
+    Value: {Fn::Join: [",", [{Ref: PublicSubnetA}, {Ref: PublicSubnetB}]]}
+    Export:
+      Name: {Fn::Sub: "${StackPrefix}-network-SubnetIds"}
+
+  SubnetIdA:
+    Value: {Ref: PublicSubnetA}
+    Export:
+      Name: {Fn::Sub: "${StackPrefix}-network-SubnetIdA"}
+
+  SubnetIdB:
+    Value: {Ref: PublicSubnetB}
+    Export:
+      Name: {Fn::Sub: "${StackPrefix}-network-SubnetIdB"}
+
+  BaseSGId:
+    Description: Base security group - 80/443 ingress, no 22 ingress.
+    Value: {Ref: BaseSG}
+    Export:
+      Name: {Fn::Sub: "${StackPrefix}-network-BaseSGId"}

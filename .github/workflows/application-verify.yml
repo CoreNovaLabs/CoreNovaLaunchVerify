@@ -1,0 +1,197 @@
+# application-verify.yml — L1 Application Verification（verify-gate-design.md §4）
+#
+# 默认**无 AWS**：只在 runner 里跑 compose + Playwright；平台正确性靠引用有效 Platform Contract。
+# 本工作流绝不进入 DEPLOYING/DEPLOYED（state-machine §3 反模式）。
+# Publish（两阶段提交 P0–P5）与失败台账都由 corenova/pipeline.py 执行，这里只做编排。
+name: application-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: "要验证的应用（apps/{app}.yaml 的文件名，必填）"
+        required: true
+        type: string
+      app_version:
+        description: "指定 app_version / 上游 release tag（留空 = 上游最新 release）"
+        required: false
+        type: string
+        default: ""
+      force:
+        description: "绕过版本覆盖保护（人工授权；仍不改九项 checks 门禁）"
+        type: boolean
+        required: false
+        default: false
+      skip_ami_drift:
+        description: "跳过公开 AMI 漂移检测（无 AWS 只读凭据时用；正常情况别勾）"
+        type: boolean
+        required: false
+        default: false
+      host_port:
+        description: "runner 本机映射端口（默认取 config/verify.yaml run.host_port）"
+        required: false
+        type: string
+        default: ""
+  workflow_call:
+    inputs:
+      app_name:
+        type: string
+        required: true
+      app_version:
+        type: string
+        required: false
+        default: ""
+      force:
+        type: boolean
+        required: false
+        default: false
+      skip_ami_drift:
+        type: boolean
+        required: false
+        default: false
+      host_port:
+        type: string
+        required: false
+        default: ""
+
+# 同 app 互斥、正在发布的不打断（state-machine §5）。
+# 禁止改成 `verify-${{ inputs.app_name || github.run_id }}`：那等于关掉互斥保护，
+# 同 app 两个 run 可同时进入 PUBLISHING 撕裂 current.json。宁可失败重触发。
+concurrency:
+  group: verify-${{ inputs.app_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify ${{ inputs.app_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      issues: write        # 失败台账 = GitHub issue（state-machine §7），由 pipeline 写/更新
+    env:
+      # 只注入本仓实际读取的变量（repo-structure.md §6）。
+      # 这里**不给** REPO_A_PAT：dispatch 由 notify-site 作业负责，避免重复触发前端重建。
+      VERIFIED_BACKEND: ${{ secrets.VERIFIED_BACKEND || 'dir' }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+      # R2 endpoint 不在此注入：§6 表里没有它，取值走 config/verify.yaml 的 r2.endpoint
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      GITHUB_TOKEN: ${{ github.token }}   # resolver / 台账走认证请求，避免匿名 API 限流
+    steps:
+      # 空值防护必须在工作流最开始（state-machine §5）：
+      # 空 app_name 会让并发组塌成 `verify-`，所有 app 互相串行排队。
+      - name: Guard — app_name 必须非空（禁止 run_id 兜底）
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_NAME//[[:space:]]/}" ]; then
+            echo "::error::app_name 为空：并发组会塌缩成 verify-，导致所有 app 互相串行。"
+            echo "调用方（monitor-versions / reverify-failed / 手工 dispatch）必须逐 app 显式传 app_name。"
+            exit 1
+          fi
+          echo "app_name=${APP_NAME}"
+
+      - name: Checkout Repo C
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Install Playwright chromium
+        run: playwright install --with-deps chromium
+
+      # 契约校验前置：schema 不合法就别浪费一次 docker pull（app-schema §5 十五条）
+      - name: Validate app schema
+        run: python scripts/verify/validate_app_schema.py --app "${{ inputs.app_name }}"
+
+      - name: Resolve runtime flags
+        id: flags
+        env:
+          SKIP_DRIFT: ${{ inputs.skip_ami_drift }}
+          FORCE: ${{ inputs.force }}
+          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' && '1' || '' }}
+        run: |
+          set -euo pipefail
+          # 无 AWS 凭据时漂移检测必然失败（boto3 会重试），显式跳过比让它空跑 3 次更诚实
+          if [ "${SKIP_DRIFT}" = "true" ] || [ -z "${HAS_AWS}" ]; then
+            echo "drift_flag=--skip-ami-drift" >> "$GITHUB_OUTPUT"
+            echo "跳过公开 AMI 漂移检测（skip_ami_drift=${SKIP_DRIFT} aws_credentials=${HAS_AWS:-no}）"
+          else
+            echo "drift_flag=" >> "$GITHUB_OUTPUT"
+          fi
+          # force 是 boolean input：只接受字面 true，其它一律不加 --force
+          if [ "${FORCE}" = "true" ]; then
+            echo "force_flag=on" >> "$GITHUB_OUTPUT"
+          else
+            echo "force_flag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 退出码 0=PUBLISHED/VERIFIED，2=FAILED（台账已由 pipeline 写/更新，job 红叉即可）
+      - name: Run Application Verification pipeline
+        env:
+          APP_VERSION: ${{ inputs.app_version }}
+          HOST_PORT: ${{ inputs.host_port }}
+          DRIFT_FLAG: ${{ steps.flags.outputs.drift_flag }}
+          FORCE_FLAG: ${{ steps.flags.outputs.force_flag }}
+        run: |
+          set -euo pipefail
+          ARGS=(--app "${{ inputs.app_name }}")
+          if [ -n "${APP_VERSION}" ]; then ARGS+=(--version "${APP_VERSION}"); fi
+          if [ -n "${HOST_PORT}" ]; then ARGS+=(--host-port "${HOST_PORT}"); fi
+          if [ -n "${DRIFT_FLAG}" ]; then ARGS+=("${DRIFT_FLAG}"); fi
+          if [ -n "${FORCE_FLAG}" ]; then ARGS+=(--force); fi
+          python scripts/verify/run_application_verify.py "${ARGS[@]}"
+
+      # 诊断只读、不改代码不开 PR（state-machine §6）：给人看的白名单化建议
+      - name: Diagnose failure (rule-based, no AI call)
+        if: failure()
+        run: |
+          set -euo pipefail
+          LATEST=$(ls -1t data/runs/*/state.json 2>/dev/null | head -1 || true)
+          if [ -z "${LATEST}" ]; then
+            echo "::warning::没有 state.json（RESOLVED 之前就失败）→ 跳过诊断，看上面的 pipeline 日志"
+            exit 0
+          fi
+          echo "诊断对象：${LATEST}"
+          if python scripts/ai-test/analyze_failure.py --run-dir "$(dirname "${LATEST}")" \
+              --summary-file "${RUNNER_TEMP}/diag.md"; then
+            cat "${RUNNER_TEMP}/diag.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::诊断脚本失败（不影响门禁结论）"
+          fi
+
+      - name: Upload run artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-run-${{ inputs.app_name }}-${{ github.run_id }}
+          path: |
+            data/runs/
+            data/reports/
+          if-no-files-found: warn
+          retention-days: 30
+
+  # P5（写 current.json + index.json）已在 pipeline 内完成；本作业只发 repository_dispatch。
+  notify-site:
+    name: dispatch verified-update → Repo A
+    needs: verify
+    if: success()
+    uses: ./.github/workflows/publish-site.yml
+    with:
+      app_name: ${{ inputs.app_name }}
+    secrets: inherit

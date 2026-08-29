@@ -1,0 +1,252 @@
+# Contract · Deployment Contract（网站数据契约）
+
+> 优先级：**最高**。
+> 适用：Repo A `CoreNovaLaunchWebsite` 构建时消费的运行时数据。
+> 本文规定"网站只能从 Manifest 拿什么、不能自己猜什么"。任何设计文档与之冲突，以本文为准。
+
+## 1. 唯一事实源声明
+
+```
+R2 = Website Runtime Source of Truth
+```
+
+- Repo A 构建时**只**从 R2 拉取 `verified/{app}/current.json` 与 `verified/{app}/versions/*.json`。
+- Repo A **禁止**读取 `apps/`（ Repo C 工作区文件）。
+- Repo A **禁止**把 Git 仓库里任何 `verified` 数据当作运行时事实源。
+- Git 中可保留审计副本，但**不能形成第二套网站事实源**。
+
+> **例外（非验证事实源）**：官网版本页展示的 GitHub Release Notes（`Repo A` 构建时缓存到 `data/{app}/releases.json`）属于**上游元数据同步**，从 GitHub API 拉取，**不进入** `current.json` / `versions/*.json`，也不属于"验证事实源"。它不构成第二套网站事实源——`verified/*/current.json` 仍是唯一验证事实源。Release Notes 缺失 / 限流时降级为空白或上次缓存，不影响验证状态展示。
+
+## 2. `current.json` 形状（= Manifest 的 website 投影）
+
+`current.json` 逐字段等于 Verification Manifest 的 `website` 段（见 verification-manifest.md §4 投影权威）。`website` 段已内联扁平化后的 identity 字段（`app`、`app_version`、`verification_id`、`verified_at`、`platform_verification_id`、`ami_id`、`region`、`architecture`），因此 `current.json` 不额外携带、也不缺漏任何字段。前端只读 `current.json`：
+
+```json
+{
+  "app": "ghost",
+  "app_version": "v5.75.0",
+  "verification_id": "ghost-v5.75.0-20260827-001",
+  "platform_verification_id": "plat-us-east-1-x86_64-20260827-001",
+  "ami_id": "ami-0abc123def4567890",
+  "architecture": "x86_64",
+  "region": "us-east-1",
+
+  "display_name": { "en": "Ghost Blog", "zh": "Ghost 博客" },
+  "description": { "en": "...", "zh": "..." },
+  "category": "cms",
+  "icon": "/icons/ghost.svg",
+  "featured": true,
+  "tags": ["blog", "cms", "publishing"],
+  "features": [
+    { "en": "Automated testing before each release", "zh": "每次发布前自动化测试" }
+  ],
+
+  "health": "passed",
+  "status": "verified",
+  "verified_at": "2026-08-27T10:00:00Z",
+  "report_url": "https://<r2-public>/reports/ghost-v5.75.0-20260827-001.html",
+  "workflow_run_url": "https://github.com/<org>/CoreNovaLaunchVerify/actions/runs/123456",
+  "screenshots_order": ["home", "admin"],
+
+  "deploy": {
+    "launch_url": "https://ghost.us-east-1.corenovalaunch.app",
+    "documentation_url": "https://docs.ghost.org",
+    "regions": ["us-east-1"],
+    "instance_type": "t3.small",
+    "container_port": 2368,
+    "docker_image": "ghost:5.75.0-alpine"
+  },
+
+  "release": {
+    "type": "new_version",
+    "previous_version": "v5.74.0",
+    "type_evidence": "release notes contain no security/CVE keyword; version bump 5.74.0 -> 5.75.0"
+  },
+
+  "screenshots": [
+    { "scenario": "home", "file": "home.png",
+      "url": "https://<r2-public>/screenshots/ghost/v5.75.0/home.png",
+      "caption": { "en": "Home", "zh": "首页" } },
+    { "scenario": "admin", "file": "admin.png",
+      "url": "https://<r2-public>/screenshots/ghost/v5.75.0/admin.png",
+      "caption": { "en": "Admin", "zh": "管理后台" } }
+  ]
+}
+```
+
+### 2.1 `verified/index.json` 形状（网站枚举应用的唯一入口）
+
+R2 公共端点**不支持 ListObjects**，Repo A 无法自行发现有哪些 app。因此 Repo C 在 PUBLISHING 的 P5 步骤与 `current.json` 同批写一份清单，前端**必须先读它**：
+
+```json
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-08-27T10:00:05Z",
+  "apps": [
+    {
+      "app": "ghost",
+      "app_version": "v5.75.0",
+      "verification_id": "ghost-v5.75.0-20260827-001",
+      "status": "verified",
+      "health": "passed",
+      "verified_at": "2026-08-27T10:00:00Z"
+    }
+  ]
+}
+```
+
+- `apps[]` 与 `verified/{app}/current.json` 一一对应；清单里有、current 缺失 → Repo A 构建**必须失败**（不得静默跳过，否则网站少应用无人察觉）。
+- 移除应用：Repo C 删除其 `current.json` 并同步从 `index.json` 摘除。
+
+### 2.2 版本记录过滤（`versions/*.json`）
+
+- 版本页读取 `verified/{app}/versions/*.json`（完整 Manifest，见 verification-manifest.md §3）。
+- **只渲染 `checks.*` 九项全 `true`** 的最终态记录；两阶段提交中断留下的占位记录（三项上传 check 为 `false`）不得出现在网站上，也不得由前端补写成通过。
+- 前端展示"测试报告"必须逐条映射 Manifest 的九个 check 名（见 §3.1），**禁止**自造 `Docker Build / API Test` 之类不存在的检查项。
+
+### 2.3 截图投递方式（裁决：构建期镜像，不改键路径）
+
+此前 `website-design.md` §8 说"构建时下载到 `static/screenshots/`"，而本文 §2 示例给的是 R2 绝对 URL —— 二者冲突。定为：
+
+- **Repo A 构建期把每张截图镜像到站点自身的同名相对路径**，仅替换 origin，**不改键路径**：
+
+```
+Manifest: https://pub-xxxx.r2.dev/screenshots/ghost/v5.75.0/home.png
+产物:     dist/screenshots/ghost/v5.75.0/home.png
+渲染:     /screenshots/ghost/v5.75.0/home.png
+```
+
+- 理由：① R2 公共访问未开启/配错时不至于全站图裂；② 省 R2 egress 与跨域配置；③ 站点不依赖站外链接存活。
+- 该镜像是**构建期搬运**，键路径完全由 Manifest 的 `url` 决定；**前端代码不得自行拼路径或猜文件名**（§6 反模式仍成立）。
+- 镜像失败（对象 404）→ Repo A 构建**必须失败**，不得静默产出图裂的页面（这正是 verification-manifest.md §6.2 P3 探测要防的事故）。
+- 引导期后端为本地 fixtures 时，同一逻辑从目录读取同名文件后镜像，路径规则不变。
+
+## 3. 字段来源约束（禁止前端猜测）
+
+| 网站展示项 | 来源字段 | 是否允许前端推断 |
+|-----------|---------|----------------|
+| Deploy 按钮链接 | `deploy.launch_url` | ❌ 必须来自 Manifest |
+| 文档链接 | `deploy.documentation_url` | ❌ 必须来自 Manifest |
+| 支持区域 | `deploy.regions` | ❌ 必须来自 Manifest |
+| 更新类型徽章（New Version / Security Update） | `release.type` | ❌ **必须来自数据**，前端不得按版本号猜 |
+| 上一版本 | `release.previous_version` | ❌ 必须来自 Manifest |
+| 验证状态 | `status` / `health` | ❌ 必须来自 Manifest |
+| 验证时间 | `verified_at` | ❌ 必须来自 Manifest |
+| 验证标识 | `verification_id` | ❌ 必须来自 Manifest |
+| 架构 / 区域 | `architecture` / `region` | ❌ 必须来自 Manifest |
+
+网站**不得**出现 `verified=true` 之外的"假阳性"状态推断。未验证应用根本不会出现在 R2，自然不上前端。
+
+> 注：`health` 字段 = Verification Manifest 的 `verification.application`（值 `passed`/`referenced`/`failed`），是 `website` 段的投影，非前端独立计算。它描述"应用行为是否通过验证"，与 `status=verified`（已发布）语义不同：一个应用可 `status=verified` 但某次 `health=referenced`（仅引用平台契约、应用层未单独重跑 AWS）。
+
+### 3.1 测试报告映射（版本页 / 详情页展开区）
+
+网站"CoreNova Test Report"**必须逐条渲染 Manifest 的 `checks.*` 九项**，名称与语义一一对应。**禁止**出现契约中不存在的检查项（旧 `website-design.md` 版本页示例中的 `Docker Build` / `API Test` 属自造项，已废弃）。
+
+| 网站展示行 | Manifest 字段 | 阶段 |
+|-----------|--------------|------|
+| Compose started | `checks.compose_started` | VERIFYING |
+| Container healthy | `checks.container_healthy` | VERIFYING |
+| Health check passed | `checks.health_check_passed` | VERIFYING |
+| Application tests | `checks.tests_passed` | VERIFYING |
+| Screenshots captured | `checks.screenshots_generated` | VERIFYING |
+| Screenshots published | `checks.screenshots_uploaded` | PUBLISHING |
+| Report published | `checks.report_uploaded` | PUBLISHING |
+| Manifest published | `checks.verification_manifest_uploaded` | PUBLISHING |
+| Platform contract valid | `checks.required_platform_contract_valid` | RESOLVED |
+
+- 展示文案的 i18n 由前端负责；**check 名与条数不得增删**。
+- 版本页另需渲染 `verification.application` / `verification.platform` / `verification.tests` 三值（`passed`/`referenced`/`failed`/`skipped`），与 `checks` 布尔值分列，不得互相推断。
+
+### 3.2 新增字段的来源约束
+
+| 网站展示项 | 来源字段 | 是否允许前端推断 |
+|-----------|---------|----------------|
+| 详情页能力要点 | `features[]`（双语） | ❌ 来自 app schema → Manifest 投影 |
+| 详情页 Docker Image | `deploy.docker_image` | ❌ 必须来自 Manifest（= `container.image`） |
+| 更新类型判定依据（tooltip/审计） | `release.type_evidence` | ❌ 必须来自 Manifest |
+| 验证运行链接 | `workflow_run_url` | ❌ 必须来自 Manifest |
+| 截图 | `screenshots[].url` + `screenshots_order` | ❌ URL 与顺序均来自 Manifest，前端不得自行拼接对象路径 |
+
+## 4. `release.type` 枚举与数据化
+
+更新历史/列表页的"类型"必须数据化，不得前端猜测：
+
+| 值 | 含义 | 由谁写入 |
+|----|------|---------|
+| `initial` | 首次上架 | Repo C 解析到该 app 无历史版本时 |
+| `new_version` | 普通新版本 | Repo C 对比 `app_version` 变化且非安全公告 |
+| `security_update` | 安全更新 | Repo C 解析上游 release 含 `security`/`CVE` 关键词，或人工标注 |
+| `bug_fix` | 缺陷修复版本 | Repo C 解析 release notes 判定 |
+
+前端根据 `release.type` 渲染不同颜色徽章（New Version 蓝 / Security Update 红 / Bug Fix 灰）。
+
+### 4.1 确定性判定顺序（Repo C `RESOLVED` 阶段执行）
+
+自上而下取**首个命中项**，并把命中依据写入 `release.type_evidence`（字符串，说明命中了哪条规则、命中了什么关键词/版本差）：
+
+| 序 | 规则 | 结果 |
+|----|------|------|
+| 1 | 该 app 在 R2 无任何已发布 `versions/*.json` | `initial` |
+| 2 | 上游 release `name` + `body` + `tag` 命中 `CVE-\d{4}-\d+` 或 `security advis?ory` / `security patch` / `vulnerab` | `security_update` |
+| 3 | semver 可比且**仅 patch 位**变化（major/minor 不变） | `bug_fix` |
+| 4 | 其余（major/minor 变化、semver 不可比如日期串/分支名） | `new_version` |
+
+- 人工覆盖：只允许在 `apps/{app}.yaml` 的 `release_type_override` 显式声明（值 ∈ 四枚举 + 必填 `# reason:` 注释），优先级高于上表，且必须同样写入 `type_evidence`（记 `manual:` 前缀）。
+- semver 不可比较时**禁止**猜测 `bug_fix`，一律落 `new_version`。
+- 前端与 Repo A 一律**只读**该字段，不得重算或按版本号推断。
+
+## 5. 网站统计数字（禁止伪造）
+
+`website-design.md` 中的统计区（如 `120+` / `2,580+` / `98.7%` / `24/7`）**不得写死**。每个数字必须定义：
+
+| 统计项 | 数据来源 | 计算公式 | 更新频率 |
+|--------|---------|---------|---------|
+| 已验证应用数 | R2 `verified/*/current.json` 计数 | `count(current.json where status==verified)` | 每次构建 |
+| 已验证版本数 | R2 `verified/*/versions/*.json` 计数 | `count(versions/*.json)` | 每次构建 |
+| 验证成功率 | GitHub Actions API | `passed_runs / total_runs`（近 30 天） | 每次构建（拉 API） |
+| GitHub Stars | GitHub REST API `GET /repos/{owner}/{repo}` | 各上游仓库 `stargazers_count` 求和 / 展示（对应前端 `{{github_stars}}` 占位符） | 每次构建（拉 API，限流降级为 `—`） |
+| 自动化测试 | 常量/文案 | 固定文案 "Automated Testing"，非数值 | 静态 |
+
+如果没有真实统计来源：使用明确的 **placeholder**（如 `{{verified_app_count}}` 在构建时替换），**绝不伪造业务数字**。降级：API 失败则用上次缓存或显示 `—`。
+
+### 5.1 统计落点：`data/stats.json`（Repo A 构建期生成）
+
+统计数字**不进 `current.json`**（否则 `current.json` 就不再逐字段等于 Manifest 的 `website` 段，违反 §2）。`fetch-verified.mjs` 构建期另生成一份：
+
+```json
+{
+  "schema_version": "1.0",
+  "generated_at": "2026-08-27T10:05:00Z",
+  "verified_app_count": 1,
+  "verified_version_count": 3,
+  "success_rate": { "value": 96.5, "window_days": 30, "source": "actions_runs", "sampled_at": "2026-08-27T10:05:00Z" },
+  "github_stars": { "ghost": 52000, "n8n": 108000 },
+  "degraded": ["success_rate"]
+}
+```
+
+| 字段 | 计算来源 | 缺失时 |
+|------|---------|--------|
+| `verified_app_count` | `index.json.apps` 中 `status == "verified"` 计数 | 不可能缺（index 为必需） |
+| `verified_version_count` | 各 app `versions/*.json` 中九项 checks 全真记录计数 | 同上 |
+| `success_rate` | Repo C `application-verify.yml` 近 30 天 run 结论：`completed_success / completed_total` | 记入 `degraded[]`，前端显示 `—` |
+| `github_stars` | GitHub REST `GET /repos/{owner}/{repo}` 的 `stargazers_count`（按 app 存，前端自行求和） | 记入 `degraded[]`，前端显示 `—` |
+
+- `success_rate` 必须带 `window_days` 与采样时间，前端展示为"近 30 天"，**不得**展示成累计值。
+- `degraded[]` 存在时，前端对应统计卡必须显示 `—` 而非上次数值，避免陈旧数字被误读为实时值。
+- 统计文件属**派生产物**：不进 R2 的 verified 命名空间（写 Repo A 构建工作区 `data/stats.json`），不构成第二套验证事实源。
+
+
+## 6. 反模式
+
+- ❌ 前端根据版本号自己猜 `Security Update` / `New Version`。
+- ❌ 前端 hardcode `120+` 等数字。
+- ❌ 前端读 `apps/` 或 Git 内 `verified` 当事实源。
+- ❌ 网站出现"未经 Manifest 证明"的已验证状态。
+- ❌ 版本页渲染契约里不存在的检查项（如 `Docker Build` / `API Test`）——检查项名称以 §3.1 映射表为唯一准绳。
+- ❌ 把 `github_stars` / `success_rate` 等构建期派生统计塞进 `current.json`（应落 `data/stats.json`，见 §5.1）。
+- ❌ 没有 `index.json` 就靠枚举猜测 app 列表（§2.1）。
+- ❌ 渲染两阶段提交中间态的占位版本记录（三项上传 check 为 `false`，见 §2.2）。
+- ❌ 前端自行拼接截图对象路径（必须用 `screenshots[].url` 原值）。
+- ❌ 未验证的上游新版本在网站上显示为"已验证"或"待验证"占位卡（未 `PUBLISHED` 的应用根本不进 R2）。

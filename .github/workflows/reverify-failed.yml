@@ -1,0 +1,136 @@
+# reverify-failed.yml — 每天按台账重试「有资格重试」的失败（workflow-state-machine.md §7）
+#
+# 台账唯一载体 = Repo C 的 GitHub issue（禁止把待重试状态放 run 上下文 / artifact / 本地文件）。
+# 消费规则（严格）：
+#   1) 只有 classification=TRANSIENT 且 attempts<3 且 issue open 才重新 dispatch application-verify；
+#   2) APPLICATION / TEST / INFRASTRUCTURE / MANUAL_REQUIRED **永不自动触发**，只汇总给人看；
+#   3) attempts 由 pipeline 在重复失败时 +1（单一写入方），本工作流不改台账、不关 issue。
+name: reverify-failed
+
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只读台账并打印将要重试的清单，不真正 dispatch"
+        type: boolean
+        required: false
+        default: false
+
+# 单组：避免两轮监控同时把同一 app 塞进队列（并发组按 app 互斥，但 attempts 判定要先看台账）
+concurrency:
+  group: reverify-failed
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: read          # 读失败台账
+  actions: write        # gh workflow run 重新 dispatch
+
+jobs:
+  reverify:
+    name: 重试 TRANSIENT 失败
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+    steps:
+      - name: Checkout Repo C
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      # 全量台账（含不可重试四类）→ job summary，给人看
+      - name: Read failure ledger
+        run: |
+          set -euo pipefail
+          if ! python scripts/monitor/list_failures.py --limit 50 --strict \
+              --summary-file "${RUNNER_TEMP}/ledger-all.md" > "${RUNNER_TEMP}/ledger.json"; then
+            echo "::warning::台账部分不可读 → 摘要可能不完整；是否 dispatch 由下一步的可重试筛选决定"
+            printf '[]' > "${RUNNER_TEMP}/ledger.json"
+          fi
+          if [ -f "${RUNNER_TEMP}/ledger-all.md" ]; then
+            cat "${RUNNER_TEMP}/ledger-all.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## 失败台账：本轮不可读（详见日志），不代表没有失败" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # 可重试清单：脚本按 TRANSIENT + attempts<3 + open 过滤；这里再自校验一次（外部输入不可信任）
+      # --strict：读不到台账就直接失败。把"读失败"当成"没有失败"会让 reverify 静默空转。
+      - name: Select retryable entries
+        id: select
+        run: |
+          set -euo pipefail
+          python scripts/monitor/list_failures.py --retryable-only --strict --json > "${RUNNER_TEMP}/retryable.json"
+          python - "${RUNNER_TEMP}/retryable.json" "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+
+          rows = json.load(open(sys.argv[1]))
+          print(f"可重试条目（TRANSIENT 且 attempts<3）：{len(rows)}")
+          bad = [r for r in rows if r.get("classification") != "TRANSIENT" or int(r.get("attempts") or 1) >= 3]
+          if bad:
+              # 一旦筛选口径被改坏，宁可整轮停手：错误重试会掩盖真实回归（§4 禁止统一重试）
+              print(f"::error::筛选结果含无自动重试资格的条目，拒绝 dispatch：{bad}")
+              sys.exit(1)
+          missing = [r for r in rows if not str(r.get("app") or "").strip()]
+          if missing:
+              print(f"::error::台账条目缺 app（并发组会塌缩），拒绝 dispatch：{missing}")
+              sys.exit(1)
+          with open(sys.argv[2], "a", encoding="utf-8") as fh:
+              fh.write(f"count={len(rows)}\n")
+              # 逐行 "app<TAB>app_version"，供下一步按 app 分别 dispatch
+              fh.write("targets<<EOF\n")
+              for r in rows:
+                  fh.write(f"{r['app']}\t{r.get('app_version') or ''}\n")
+              fh.write("EOF\n")
+          PY
+
+      - name: Re-dispatch application-verify (per app)
+        env:
+          TARGETS: ${{ steps.select.outputs.targets }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TARGETS}" ]; then
+            echo "台账里没有可自动重试的条目 → 本轮不 dispatch"
+            exit 0
+          fi
+          while IFS=$'\t' read -r APP VER; do
+            [ -z "${APP}" ] && continue
+            CMD=(gh workflow run application-verify.yml --ref "${{ github.ref_name }}"
+                 -f app_name="${APP}")
+            # app_version 留空时不传：让 pipeline 重新按 version_strategy 解析最新 release
+            if [ -n "${VER}" ]; then
+              CMD+=(-f app_version="${VER}")
+            fi
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo "[dry-run] ${CMD[*]}"
+              continue
+            fi
+            echo "重试 ${APP}@${VER:-<latest>}"
+            "${CMD[@]}"
+            # 逐 app 独立 run（state-machine §5）；同 app 由 verify-<app> 并发组排队串行
+            sleep 2
+          done <<< "${TARGETS}"
+
+      - name: 不可重试条目提醒
+        if: always()
+        run: |
+          {
+            echo ""
+            echo "### 无自动重试资格的失败"
+            echo ""
+            echo "APPLICATION / TEST 走 FIX_PR（白名单 \`apps/<app>/tests/**\`、\`apps/<app>.yaml\`，需人 review）；"
+            echo "INFRASTRUCTURE / MANUAL_REQUIRED 走人工。本工作流**不会**为它们触发任何 run（§4）。"
+            echo ""
+            echo "本轮 dispatch 条数：**${{ steps.select.outputs.count || '0' }}**"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,95 @@
+#!/bin/bash
+# cfn-init asset: renders the nginx reverse proxy that fronts every CoreNova app container.
+# Filename keeps the substring "nginx" so platformref.compute_revisions() can key
+# nginx_base_revision off it (Platform Contract §2.1 public-mode mapping).
+set -xeuo pipefail
+
+APP_NAME="${CFNOVA_APP_NAME:?}"
+CONTAINER_PORT="${CFNOVA_CONTAINER_PORT:?}"
+SERVER_NAMES="${CFNOVA_SERVER_NAMES:-}"
+TLS_PEM_PATH="${CFNOVA_TLS_PEM_PATH:-}"
+SELF_SIGNED_TLS="${CFNOVA_SELF_SIGNED_TLS:-false}"
+
+install -d -m 0755 /etc/nginx/tls /var/log/nginx
+DEBIAN_FRONTEND=noninteractive apt-get install -y nginx logrotate || {
+  echo "[corenova] nginx install failed"; exit 1;
+}
+# Ubuntu 的 nginx 包自带 sites-enabled/default（也是 80 default_server），
+# 与我们这份 conf 并存会让 nginx -t 直接失败（实测 duplicate default server）。
+rm -f /etc/nginx/sites-enabled/default
+
+if [ -n "$TLS_PEM_PATH" ] && [ ! -s "$TLS_PEM_PATH" ]; then
+  echo "[corenova] WARN: TlsPemPath=$TLS_PEM_PATH is missing or empty, 443 stays closed"
+  TLS_PEM_PATH=""
+fi
+
+if [ -z "$TLS_PEM_PATH" ] && [ "$SELF_SIGNED_TLS" = "true" ]; then
+  # Golden Verification must measure a real 443 listener; a self-signed bundle is enough because
+  # the probe asserts reachability through the SG, not certificate trust.
+  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout /etc/nginx/tls/corenova-selfsigned.pem \
+    -out /etc/nginx/tls/corenova-selfsigned.pem \
+    -subj "/CN=corenova-canary" >/dev/null 2>&1
+  chmod 0600 /etc/nginx/tls/corenova-selfsigned.pem
+  TLS_PEM_PATH=/etc/nginx/tls/corenova-selfsigned.pem
+fi
+
+cat > /etc/nginx/conf.d/corenova-proxy.conf <<EOF
+map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
+
+upstream corenova_${APP_NAME} {
+  server 127.0.0.1:${CONTAINER_PORT} max_fails=3 fail_timeout=10s;
+  keepalive 16;
+}
+
+server {
+  listen 80 default_server;
+  listen [::]:80 default_server;
+  server_name _ ${SERVER_NAMES};
+
+  access_log /var/log/nginx/corenova-${APP_NAME}.access.log;
+
+  location = /corenova-health {
+    access_log off;
+    proxy_pass http://corenova_${APP_NAME};
+  }
+
+  location / {
+    proxy_pass http://corenova_${APP_NAME};
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection \$connection_upgrade;
+    proxy_read_timeout 90s;
+  }
+}
+EOF
+
+if [ -n "$TLS_PEM_PATH" ]; then
+  cat >> /etc/nginx/conf.d/corenova-proxy.conf <<EOF
+
+server {
+  listen 443 ssl default_server;
+  listen [::]:443 ssl default_server;
+  server_name _ ${SERVER_NAMES};
+  ssl_certificate ${TLS_PEM_PATH};
+  ssl_certificate_key ${TLS_PEM_PATH};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  location / {
+    proxy_pass http://corenova_${APP_NAME};
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+  }
+}
+EOF
+fi
+
+nginx -t
+systemctl daemon-reload
+systemctl enable nginx
+systemctl restart nginx
+echo "[corenova] nginx serving for ${APP_NAME} on 127.0.0.1:${CONTAINER_PORT}"

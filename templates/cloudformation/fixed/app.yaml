@@ -1,0 +1,885 @@
+AWSTemplateFormatVersion: "2010-09-09"
+# Long-form intrinsics ({Ref: X} / {Fn::Sub: ...}) are deliberate: they keep this file loadable by
+# a bare `yaml.safe_load`, so the CI gate can parse the templates without a CFN tag registry.
+#
+# This is the stack a user deploys for a self-service single-instance launch, and the exact same
+# template that Golden Verification runs as the canary (canary.yaml is generated from this file and
+# only differs in parameter defaults). Bootstrap mode = public AMI: the Docker engine, Nginx, the
+# SSM agent and the CloudWatch agent are installed by cfn-init at boot because the Ubuntu public
+# image ships none of them. Readiness is reported through a WaitCondition signalled by cfn-signal.
+# No EC2 KeyPair and no ingress on 22 - operations go through SSM Session Manager (§8).
+Description: >
+  CoreNova Launch single-instance application stack (platform-contract.md §9 Application Stack).
+  Public-AMI bootstrap: cfn-init installs Docker/Nginx/CloudWatch, the container is rendered as a
+  systemd unit, cfn-signal answers the WaitCondition. Remote access is SSM only.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: corenova-app
+    AllowedPattern: ^[a-z][a-z0-9-]*$
+    Description: Logical application name; drives the systemd unit, the nginx upstream and the tags.
+
+  ImageReference:
+    Type: String
+    MinLength: 3
+    MaxLength: 512
+    AllowedPattern: ^\S+$
+    Description: >
+      Exact immutable image reference '<repo>:<tag>@sha256:<digest>' as rendered by Application
+      Verification. Nothing about the application image is hardcoded here (app-schema.md §3.1
+      forbids moving tags).
+
+  ContainerPort:
+    Type: Number
+    MinValue: 1
+    MaxValue: 65535
+    Description: Container listen port; published on 127.0.0.1 only - nginx is the public face.
+
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: >
+      AMI id pinned by the Platform Contract. The template never resolves an SSM pointer itself:
+      the caller resolves it once and passes the immutable id (platform-contract.md §6).
+
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedPattern: ^[a-z0-9]+\.[a-z0-9]+$
+    Description: EC2 instance type (v1 is x86_64 only, platform-contract.md §7).
+
+  DiskGb:
+    Type: Number
+    Default: 30
+    MinValue: 8
+    MaxValue: 1024
+    Description: Root gp3 EBS volume size.
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet exported by the corenova-network stack.
+
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Base SG exported by corenova-network (80/443 ingress, no 22 ingress).
+
+  NetworkStackName:
+    Type: String
+    Default: corenova-network
+    Description: >
+      Network stack this deployment is wired to. Carried explicitly instead of through
+      Fn::ImportValue so the same template also works against a pre-existing or imported VPC;
+      Golden Verification cross-checks SubnetId/SecurityGroupId against that stack's outputs.
+
+  LaunchUrl:
+    Type: String
+    Default: ""
+    AllowedPattern: ^$|^https?://\S+$
+    Description: >
+      Public URL of this deployment (deployment-contract.md deploy.launch_url). Injected into the
+      container as CORENOVA_APP_URL so the app builds correct absolute links. Empty means
+      "reachable through the instance public DNS name".
+
+  Hostnames:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: >
+      Extra nginx server_name entries (e.g. ghost.us-east-1.corenovalaunch.app). A '_' catch-all is
+      always kept, so access by public DNS keeps working before DNS points at the instance.
+
+  HealthCheckPath:
+    Type: String
+    Default: /
+    AllowedPattern: ^/\S*$
+    Description: Readiness path polled through the local nginx reverse proxy before cfn-signal.
+
+  DataDirHostPath:
+    Type: String
+    Default: /var/lib/corenova/app/data
+    AllowedPattern: ^/[A-Za-z0-9._/-]*$
+    Description: Host directory bind-mounted read/write into the container as /data.
+
+  SmokeImage:
+    Type: String
+    Default: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    Description: >
+      Digest-pinned throwaway image cfn-init uses to prove the Docker runtime can pull and start a
+      container. Never the application image.
+
+  SelfSignedTls:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Generate a self-signed certificate so 443 really listens. Golden Verification turns it on to
+      measure the 443 path; a production deployment should instead deliver a real PEM at
+      TlsPemPath (an ACM-issued certificate cannot be used by in-instance nginx, because ACM never
+      exposes the private key).
+
+  TlsPemPath:
+    Type: String
+    Default: ""
+    AllowedPattern: ^$|^/[A-Za-z0-9._/-]*$
+    Description: >
+      Path inside the instance of a PEM bundle holding key plus certificate chain, delivered by the
+      operator or via InitOverrideUrl. Non-empty wins over SelfSignedTls.
+
+  DataContainerPath:
+    Type: String
+    Default: /data
+    Description: 容器内的数据挂载点（Ghost 是 /var/lib/ghost/content，各应用不同，不能写死）。
+  ExtraEnvironment:
+    Type: String
+    Default: ""
+    Description: >
+      Newline separated KEY=VALUE lines appended to the container environment file. App secrets
+      belong here or in SSM Parameter Store, never inside ImageReference.
+
+  InitOverrideUrl:
+    Type: String
+    Default: ""
+    AllowedPattern: ^$|^https://\S+$
+    Description: >
+      Optional signed HTTPS URL delivering a cfn-init override document (cfn-init --override), for
+      example to write the TLS PEM or private app config without baking secrets into the template.
+
+  SignalTimeoutSeconds:
+    Type: Number
+    # CreationPolicy.ResourceSignal.Timeout 要的是"秒数"
+    Default: 1200
+    MinValue: 300
+    MaxValue: 7200
+    Description: cfn-signal wait budget (seconds) for ResourceSignal.
+  SignalTimeoutIso:
+    Type: String
+    Default: PT20M
+    AllowedPattern: ^PT[0-9]+[MWH]$
+    # WaitCondition.Timeout 只接受 ISO8601 时长，与上面不是同一种类型——真建栈时才会发现
+    Description: Same budget as SignalTimeoutSeconds, in ISO8601 form for WaitCondition.
+    
+
+  CloudWatchLogGroupName:
+    Type: String
+    Default: /corenova/apps
+    Description: Log group that instances built from this stack publish to.
+
+  GoldenRunId:
+    Type: String
+    Default: ""
+    Description: >
+      Set only by Golden Verification: tags the instance with the platform_verification_id being
+      produced, so a leaked canary can be traced back to the run that created it.
+
+  TerminationProtection:
+    Type: String
+    Default: Enabled
+    AllowedValues: [Enabled, Disabled]
+    Description: >
+      Maps to DisableApiTermination (inverted). Golden Verification deploys with Disabled so a
+      cleanup step can never leave a billing instance behind.
+
+Conditions:
+  LaunchUrlGiven: {Fn::Not: [{Fn::Equals: [{Ref: LaunchUrl}, ""]}]}
+  GoldenRunGiven: {Fn::Not: [{Fn::Equals: [{Ref: GoldenRunId}, ""]}]}
+  ProtectInstance: {Fn::Equals: [{Ref: TerminationProtection}, Enabled]}
+
+Resources:
+  WaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+  WaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    # Delete (not Retain): a failed canary must not leave a signalling endpoint behind.
+    DeletionPolicy: Delete
+    # 只用 Properties（Handle/Count/Timeout）这一套信号机制：实例经预签名 URL PUT 即可翻转。
+    # 根因（2026-08-30 实测）：此前同时挂了 CreationPolicy.ResourceSignal，它走
+    # cfn-signal --resource + 实例凭据的另一条路，预签名 PUT 满足不了它，导致资源永远停在
+    # CREATE_IN_PROGRESS。两套门控只能留一套。
+    Properties:
+      Handle: {Ref: WaitHandle}
+      Count: 1
+      Timeout: {Ref: SignalTimeoutSeconds}
+
+  # Split into separate policies so each grant stays auditable: the two AWS managed policies alone
+  # would either over-grant (account-wide logs) or under-grant (no cfn-signal on this stack).
+  CfnBootstrapPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: CoreNova - cfn-init metadata, cfn-signal on this stack, pinned AMI parameter
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DescribeOwnStack
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackResource
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*
+          - Sid: SignalOwnStackOnly
+            Effect: Allow
+            Action: cloudformation:SignalResource
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/${AWS::StackId}
+          - Sid: ResolveAmiOnce
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource:
+              - Fn::Sub: arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/corenova/*
+              # The canonical pointer is owned by Canonical (account segment empty in the ARN);
+              # reading it is how a custom-AMI deployment re-pins without widening this grant.
+              - Fn::Sub: arn:${AWS::Partition}:ssm:${AWS::Region}::parameter/aws/service/canonical/*
+
+  AgentBootstrapPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: CoreNova - SSM and CloudWatch agent registration
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: RegisterAsManagedInstance
+            Effect: Allow
+            Action:
+              - ssmmessages:CreateControlChannel
+              - ssmmessages:CreateDataChannel
+              - ssmmessages:OpenControlChannel
+              - ssmmessages:OpenDataChannel
+              - ssm:UpdateInstanceInformation
+              - ssm:ListInstanceAssociations
+              - ec2messages:GetMessages
+              - ec2messages:SendReply
+              - ec2messages:AcknowledgeMessage
+              - ec2messages:DeleteMessage
+              - ec2messages:FailMessage
+              - ec2messages:GetEndpoint
+            Resource: "*"
+          - Sid: ReadAgentConfigPointer
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource:
+              Fn::Sub: arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/amazon-cloudwatch-agent/*
+
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      # Deliberately no RoleName / InstanceProfileName: CFN generated physical names let several
+      # stacks coexist, and let a half-cleaned stack be replaced without an "already exists" clash.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - {Ref: CfnBootstrapPolicy}
+        - {Ref: AgentBootstrapPolicy}
+      Policies:
+        - PolicyName: corenova-instances
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DescribeOwnInstances
+                Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: "*"
+              - Sid: PublishCoreNovaMetrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: CoreNova
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - {Ref: Role}
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      Comment: >
+        cfn-init configsets. Every 'content' body below is copied byte for byte from
+        templates/cloudformation/fixed/init/<name>.sh between its two SYNCED ASSET markers.
+        golden_verify.py --sync-init rewrites them from the sources and the run aborts on drift, so
+        a platform verification can never exercise code the repository does not record.
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+            - 00-bootstrap
+            - 10-packages
+            - 20-assets
+            - 30-run-assets
+          signal:
+            - 40-signal
+        00-bootstrap:
+          # Ubuntu's first-boot provisioning holds the dpkg lock; installing under it fails.
+          commands:
+            00-wait-for-package-manager:
+              command: /bin/bash -c 'for i in $(seq 1 60); do fuser -u /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || exit 0; sleep 5; done; exit 0'
+              cwd: /tmp
+              timeout: "400"
+        10-packages:
+          packages:
+            apt:
+              curl: []
+              jq: []
+              git: []
+              openssl: []
+              ca-certificates: []
+              gnupg: []
+              lsb-release: []
+              logrotate: []
+              python3-pip: []
+              python3-yaml: []
+              sysstat: []
+              # amazon-ssm-agent 不在 Ubuntu 仓库里（实测 APT 直接报 "does not have ... available"）；
+              # Canonical 的 AWS 镜像已预装并注册 SSM agent，探针实测可用，无需安装
+          groups:
+            # 组名不能与用户名相同：cfn-bootstrap 的 _create_user 固定执行
+            # `useradd -M -r --shell /sbin/nologin -G <组> <用户>`，同名组会让它直接失败
+            # （实测 "group corenova exists - if you want to add this user to that group, use -g"）。
+            # 它也不读配置里的 gid/shell，所以只能从命名上避开。
+            corenova-app: {}
+          users:
+            corenova:
+              groups:
+                - corenova-app
+        20-assets:
+          files:
+            # One env file feeds every asset: CFN parameters become shell variables exactly once,
+            # which is what keeps the asset bodies free of Fn::Sub and therefore byte-comparable
+            # with their repository sources.
+            /opt/corenova/etc/init.env:
+              content:
+                Fn::Sub:
+                  - |
+                    export CFNOVA_APP_NAME="${AppName}"
+                    export CFNOVA_IMAGE_REFERENCE="${ImageReference}"
+                    export CFNOVA_CONTAINER_PORT="${ContainerPort}"
+                    export CFNOVA_DATA_DIR="${DataDirHostPath}"
+                    export CFNOVA_DATA_CONTAINER_PATH="${DataContainerPath}"
+                    export CFNOVA_APP_URL="${LaunchUrl}"
+                    export CFNOVA_HEALTH_PATH="${HealthCheckPath}"
+                    export CFNOVA_SMOKE_IMAGE="${SmokeImage}"
+                    export CFNOVA_SERVER_NAMES="${ServerNames}"
+                    export CFNOVA_TLS_PEM_PATH="${TlsPemPath}"
+                    export CFNOVA_SELF_SIGNED_TLS="${SelfSignedTls}"
+                    export CFNOVA_LOG_GROUP="${CloudWatchLogGroupName}"
+                    export CFNOVA_STACK_NAME="${AWS::StackName}"
+                    export CFNOVA_AWS_REGION="${AWS::Region}"
+                    export CFNOVA_WAIT_HANDLE="${WaitHandle}"
+                    export CFNOVA_READY_DEADLINE="${SignalTimeoutSeconds}"
+                    export CFNOVA_EXTRA_ENV_FILE="/opt/corenova/etc/extra.env"
+                  - ServerNames: {Fn::Join: [" ", {Ref: Hostnames}]}
+              mode: "000644"
+              owner: root
+              group: root
+            /opt/corenova/etc/extra.env:
+              # content 不能是"解析后为空串"的值：cfn-init 会报
+              # "File specified without source or content" 并整轮失败（实测）。
+              content:
+                Fn::Sub:
+                  - "# CoreNova 追加环境变量\n${ExtraEnvironment}\n"
+                  - {}
+              mode: "000640"
+              owner: root
+              group: corenova
+            /opt/corenova/bin/00-packages-and-docker-runtime.sh:
+              content: |
+                # BEGIN SYNCED ASSET 00-packages-and-docker-runtime.sh
+                #!/bin/bash
+                # cfn-init asset: installs the Docker engine on a public (unmodified) Ubuntu AMI.
+                # Filename must keep the substring "docker" - platformref.compute_revisions() keys
+                # docker_runtime_revision off it, and the Platform Contract invalidation rule §5 depends on it.
+                set -xeuo pipefail
+
+                export DEBIAN_FRONTEND=noninteractive
+                . /etc/os-release
+
+                install -d -m 0755 /etc/apt/keyrings /opt/corenova/bin /var/log/corenova
+
+                if command -v dockerd >/dev/null 2>&1; then
+                  echo "[corenova] docker already present: $(docker --version)"
+                else
+                  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+                  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+                    > /etc/apt/sources.list.d/docker.list
+                  apt-get update -y
+                  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+                fi
+
+                cat > /etc/docker/daemon.json <<'JSON'
+                {
+                  "log-driver": "json-file",
+                  "log-opts": { "max-size": "10m", "max-file": "3" },
+                  "live-restore": true,
+                  "default-address-pools": [{ "base": "172.28.0.0/16", "size": 24 }]
+                }
+                JSON
+
+                systemctl daemon-reload
+                systemctl enable docker
+                systemctl restart docker
+
+                for who in ubuntu corenova; do
+                  id -u "$who" >/dev/null 2>&1 && usermod -aG docker "$who" || true
+                done
+
+                # Proof of life for the runtime, before any application image is involved.
+                docker version
+                docker info --format '{{.ServerVersion}} {{.OperatingSystem}}'
+                docker run --rm "${CFNOVA_SMOKE_IMAGE:-alpine:3.20}" /bin/sh -c 'echo docker-run-ok'
+                # END SYNCED ASSET 00-packages-and-docker-runtime.sh
+              mode: "000755"
+              owner: root
+              group: root
+            /opt/corenova/bin/10-nginx-base.sh:
+              content: |
+                # BEGIN SYNCED ASSET 10-nginx-base.sh
+                #!/bin/bash
+                # cfn-init asset: renders the nginx reverse proxy that fronts every CoreNova app container.
+                # Filename keeps the substring "nginx" so platformref.compute_revisions() can key
+                # nginx_base_revision off it (Platform Contract §2.1 public-mode mapping).
+                set -xeuo pipefail
+
+                APP_NAME="${CFNOVA_APP_NAME:?}"
+                CONTAINER_PORT="${CFNOVA_CONTAINER_PORT:?}"
+                SERVER_NAMES="${CFNOVA_SERVER_NAMES:-}"
+                TLS_PEM_PATH="${CFNOVA_TLS_PEM_PATH:-}"
+                SELF_SIGNED_TLS="${CFNOVA_SELF_SIGNED_TLS:-false}"
+
+                install -d -m 0755 /etc/nginx/tls /var/log/nginx
+                DEBIAN_FRONTEND=noninteractive apt-get install -y nginx logrotate || {
+                  echo "[corenova] nginx install failed"; exit 1;
+                }
+                # Ubuntu 的 nginx 包自带 sites-enabled/default（也是 80 default_server），
+                # 与我们这份 conf 并存会让 nginx -t 直接失败（实测 duplicate default server）。
+                rm -f /etc/nginx/sites-enabled/default
+
+                if [ -n "$TLS_PEM_PATH" ] && [ ! -s "$TLS_PEM_PATH" ]; then
+                  echo "[corenova] WARN: TlsPemPath=$TLS_PEM_PATH is missing or empty, 443 stays closed"
+                  TLS_PEM_PATH=""
+                fi
+
+                if [ -z "$TLS_PEM_PATH" ] && [ "$SELF_SIGNED_TLS" = "true" ]; then
+                  # Golden Verification must measure a real 443 listener; a self-signed bundle is enough because
+                  # the probe asserts reachability through the SG, not certificate trust.
+                  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+                    -keyout /etc/nginx/tls/corenova-selfsigned.pem \
+                    -out /etc/nginx/tls/corenova-selfsigned.pem \
+                    -subj "/CN=corenova-canary" >/dev/null 2>&1
+                  chmod 0600 /etc/nginx/tls/corenova-selfsigned.pem
+                  TLS_PEM_PATH=/etc/nginx/tls/corenova-selfsigned.pem
+                fi
+
+                cat > /etc/nginx/conf.d/corenova-proxy.conf <<EOF
+                map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
+
+                upstream corenova_${APP_NAME} {
+                  server 127.0.0.1:${CONTAINER_PORT} max_fails=3 fail_timeout=10s;
+                  keepalive 16;
+                }
+
+                server {
+                  listen 80 default_server;
+                  listen [::]:80 default_server;
+                  server_name _ ${SERVER_NAMES};
+
+                  access_log /var/log/nginx/corenova-${APP_NAME}.access.log;
+
+                  location = /corenova-health {
+                    access_log off;
+                    proxy_pass http://corenova_${APP_NAME};
+                  }
+
+                  location / {
+                    proxy_pass http://corenova_${APP_NAME};
+                    proxy_http_version 1.1;
+                    proxy_set_header Host \$host;
+                    proxy_set_header X-Real-IP \$remote_addr;
+                    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto \$scheme;
+                    proxy_set_header Upgrade \$http_upgrade;
+                    proxy_set_header Connection \$connection_upgrade;
+                    proxy_read_timeout 90s;
+                  }
+                }
+                EOF
+
+                if [ -n "$TLS_PEM_PATH" ]; then
+                  cat >> /etc/nginx/conf.d/corenova-proxy.conf <<EOF
+
+                server {
+                  listen 443 ssl default_server;
+                  listen [::]:443 ssl default_server;
+                  server_name _ ${SERVER_NAMES};
+                  ssl_certificate ${TLS_PEM_PATH};
+                  ssl_certificate_key ${TLS_PEM_PATH};
+                  ssl_protocols TLSv1.2 TLSv1.3;
+                  location / {
+                    proxy_pass http://corenova_${APP_NAME};
+                    proxy_http_version 1.1;
+                    proxy_set_header Host \$host;
+                    proxy_set_header X-Forwarded-Proto \$scheme;
+                  }
+                }
+                EOF
+                fi
+
+                nginx -t
+                systemctl daemon-reload
+                systemctl enable nginx
+                systemctl restart nginx
+                echo "[corenova] nginx serving for ${APP_NAME} on 127.0.0.1:${CONTAINER_PORT}"
+                # END SYNCED ASSET 10-nginx-base.sh
+              mode: "000755"
+              owner: root
+              group: root
+            /opt/corenova/bin/20-cloudwatch-agent.sh:
+              content: |
+                # BEGIN SYNCED ASSET 20-cloudwatch-agent.sh
+                #!/bin/bash
+                # cfn-init asset: CloudWatch agent install + the log/metric collection config for a CoreNova host.
+                set -xeuo pipefail
+
+                LOG_GROUP="${CFNOVA_LOG_GROUP:-/corenova/apps}"
+                REGION="${CFNOVA_AWS_REGION:-$(curl -s --max-time 2 http://169.254.169.254/latest/meta-data/placement/region || true)}"
+
+                if ! command -v amazon-cloudwatch-agent >/dev/null 2>&1; then
+                  curl -fsSL "https://s3.${REGION}.amazonaws.com/amazoncloudwatch-agent-${REGION}/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb" \
+                    -o /tmp/amazon-cloudwatch-agent.deb
+                  dpkg -i /tmp/amazon-cloudwatch-agent.deb
+                fi
+
+                cat > /opt/aws/amazon-cloudwatch-agent/etc/corenova-config.json <<EOF
+                {
+                  "logs": {
+                    "logs_collected": {
+                      "files": {
+                        "collect_list": [
+                          { "file_path": "/var/log/corenova/*.log", "log_group_name": "${LOG_GROUP}", "log_stream_name": "{instance_id}/corenova", "timezone": "UTC" },
+                          { "file_path": "/var/log/nginx/error.log", "log_group_name": "${LOG_GROUP}", "log_stream_name": "{instance_id}/nginx-error", "timezone": "UTC" },
+                          { "file_path": "/var/log/syslog", "log_group_name": "${LOG_GROUP}", "log_stream_name": "{instance_id}/syslog", "timezone": "UTC" }
+                        ]
+                      }
+                    }
+                  },
+                  "metrics": {
+                    "namespace": "CoreNova",
+                    "metrics_collected": {
+                      "cpu": { "measurement": ["usage_active"], "totalcpu": false },
+                      "mem": { "measurement": ["used", "available"] },
+                      "disk": { "measurement": ["used_percent"], "disk_resources": ["nvme0n1p1", "xvda"] },
+                      "swap": { "measurement": ["used"] }
+                    }
+                  }
+                }
+                EOF
+
+                systemctl enable amazon-cloudwatch-agent
+                /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+                  -a fetch-config -m ec2 -s \
+                  -c file:/opt/aws/amazon-cloudwatch-agent/etc/corenova-config.json
+                systemctl is-active amazon-cloudwatch-agent
+                # END SYNCED ASSET 20-cloudwatch-agent.sh
+              mode: "000755"
+              owner: root
+              group: root
+            /opt/corenova/bin/30-app-container.sh:
+              content: |
+                # BEGIN SYNCED ASSET 30-app-container.sh
+                #!/bin/bash
+                # cfn-init asset: renders the systemd unit that runs the application container.
+                # Nothing about the app image or port is baked in - both arrive as CFN parameters, so the same
+                # template verifies Ghost today and any other registered app tomorrow.
+                set -xeuo pipefail
+
+                APP_NAME="${CFNOVA_APP_NAME:?}"
+                IMAGE_REFERENCE="${CFNOVA_IMAGE_REFERENCE:?}"
+                CONTAINER_PORT="${CFNOVA_CONTAINER_PORT:?}"
+                DATA_DIR="${CFNOVA_DATA_DIR:-/var/lib/corenova/app/data}"
+                DATA_MOUNT="${CFNOVA_DATA_CONTAINER_PATH:-/data}"
+                APP_URL="${CFNOVA_APP_URL:-}"
+                EXTRA_ENV_FILE="${CFNOVA_EXTRA_ENV_FILE:-}"
+                ENV_FILE="/opt/corenova/env/${APP_NAME}.env"
+
+                install -d -m 0755 "$DATA_DIR"
+                mkdir -p /opt/corenova/env
+
+                cat > "$ENV_FILE" <<EOF
+                CORENOVA_APP_IMAGE=${IMAGE_REFERENCE}
+                CORENOVA_CONTAINER_PORT=${CONTAINER_PORT}
+                CORENOVA_DATA_DIR=${DATA_DIR}
+                CORENOVA_APP_URL=${APP_URL}
+                EOF
+                if [ -n "$EXTRA_ENV_FILE" ] && [ -s "$EXTRA_ENV_FILE" ]; then
+                  cat "$EXTRA_ENV_FILE" >> "$ENV_FILE"
+                fi
+                chown root:corenova "$ENV_FILE"
+                chmod 0640 "$ENV_FILE"
+
+                cat > "/etc/systemd/system/corenova-${APP_NAME}.service" <<EOF
+                [Unit]
+                Description=CoreNova application container (${APP_NAME})
+                After=docker.service network-online.target
+                Requires=docker.service
+
+                [Service]
+                Type=simple
+                Restart=always
+                RestartSec=5
+                EnvironmentFile=${ENV_FILE}
+                ExecStartPre=-/usr/bin/docker rm -f ${APP_NAME}
+                ExecStart=/usr/bin/docker run --rm --name ${APP_NAME} \\
+                  --label corenova.app=${APP_NAME} \\
+                  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \\
+                  -p 127.0.0.1:${CONTAINER_PORT}:${CONTAINER_PORT} \\
+                  -v ${DATA_DIR}:${DATA_MOUNT} \\
+                  --env-file ${ENV_FILE} \\
+                  ${IMAGE_REFERENCE}
+                ExecStop=/usr/bin/docker stop ${APP_NAME}
+
+                [Install]
+                WantedBy=multi-user.target
+                EOF
+
+                systemctl daemon-reload
+                systemctl enable "corenova-${APP_NAME}"
+                systemctl restart "corenova-${APP_NAME}"
+                sleep 5
+                systemctl is-active "corenova-${APP_NAME}"
+                docker ps --filter "name=^/${APP_NAME}$" --format '{{.Names}} {{.Status}}'
+                # END SYNCED ASSET 30-app-container.sh
+              mode: "000755"
+              owner: root
+              group: root
+            /opt/corenova/bin/40-ready-and-signal.sh:
+              content: |
+                # BEGIN SYNCED ASSET 40-ready-and-signal.sh
+                #!/bin/bash
+                # cfn-init asset: prove the platform end-to-end locally, then answer the WaitConditionHandle.
+                # This is the only place a deployment may declare itself ready; Golden Verification reads the
+                # signal as cfn_signal_received and /run/corenova-cfn-init.rc as cfn_init_completed.
+                set -uo pipefail
+
+                STACK="${CFNOVA_STACK_NAME:?}"
+                REGION="${CFNOVA_AWS_REGION:?}"
+                APP_NAME="${CFNOVA_APP_NAME:?}"
+                HEALTH_PATH="${CFNOVA_HEALTH_PATH:-/}"
+                HANDLE_URL="${CFNOVA_WAIT_HANDLE:?}"
+                # init.env carries the WaitCondition budget in minutes; leave a two minute margin so a failing
+                # probe still signals FAILURE before the stack itself times out.
+                DEADLINE=$(( $(date +%s) + ${CFNOVA_READY_DEADLINE:-1200} - 120 ))
+
+                code=000
+                ok=0
+                reason="readiness probe timed out"
+                while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+                  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://127.0.0.1:80${HEALTH_PATH}" || echo 000)
+                  case "$code" in
+                    2*|3*) reason="nginx reverse proxy answered HTTP $code on :80"; ok=1; break ;;
+                  esac
+                  sleep 5
+                done
+
+                init_rc="$(cat /run/corenova-cfn-init.rc 2>/dev/null || echo unknown)"
+                [ "$init_rc" = "0" ] || ok=0
+
+                status=FAILURE
+                [ "$ok" = 1 ] && status=SUCCESS
+                detail="{\"Status\":\"${status}\",\"Reason\":\"${reason}; cfn-init rc=${init_rc}\",\"UniqueId\":\"${STACK}-${APP_NAME}\",\"Data\":{\"http_code\":\"${code}\",\"cfn_init_rc\":\"${init_rc}\"}}"
+
+                if command -v cfn-signal >/dev/null 2>&1; then
+                  # 预签名 URL 与逻辑资源（--stack/--resource）二选一，同时传会被拒绝
+                  # （实测 "Cannot specify both a WaitConditionHandle URL and a logical resource id"）。
+                  # 用 URL：无需实例凭据。
+                  cfn-signal -e "$([ "$ok" = 1 ] && echo 0 || echo 1)" "$HANDLE_URL" && exit 0
+                fi
+
+                # Fallback keeps the WaitCondition satisfiable even when aws-cfn-bootstrap failed to install:
+                # the handle URL is a presigned PUT, so it needs no credentials on the instance.
+                curl -sS -X PUT -H 'Content-Type:' -d "$detail" "$HANDLE_URL"
+                # END SYNCED ASSET 40-ready-and-signal.sh
+              mode: "000755"
+              owner: root
+              group: root
+        30-run-assets:
+          # Writing and running are separate configsets, so `--configsets signal` can be re-run by
+          # hand without reinstalling the platform underneath.
+          commands:
+            00-packages-and-docker-runtime:
+              command: /bin/bash -c '. /opt/corenova/etc/init.env; exec /opt/corenova/bin/00-packages-and-docker-runtime.sh'
+              cwd: /tmp
+              timeout: "1200"
+            10-nginx-base:
+              command: /bin/bash -c '. /opt/corenova/etc/init.env; exec /opt/corenova/bin/10-nginx-base.sh'
+              cwd: /tmp
+              timeout: "600"
+            20-cloudwatch-agent:
+              command: /bin/bash -c '. /opt/corenova/etc/init.env; exec /opt/corenova/bin/20-cloudwatch-agent.sh'
+              cwd: /tmp
+              timeout: "600"
+            30-app-container:
+              command: /bin/bash -c '. /opt/corenova/etc/init.env; exec /opt/corenova/bin/30-app-container.sh'
+              cwd: /tmp
+              timeout: "1200"
+        40-signal:
+          commands:
+            00-ready-and-signal:
+              command: /bin/bash -c '. /opt/corenova/etc/init.env; exec /opt/corenova/bin/40-ready-and-signal.sh'
+              cwd: /tmp
+              timeout: "1800"
+    Properties:
+      ImageId: {Ref: AmiId}
+      InstanceType: {Ref: InstanceType}
+      IamInstanceProfile: {Ref: InstanceProfile}
+      SubnetId: {Ref: SubnetId}
+      SecurityGroupIds:
+        - {Ref: SecurityGroupId}
+      SourceDestCheck: true
+      DisableApiTermination: {Fn::If: [ProtectInstance, true, false]}
+      # IMDSv2 only: the container and every local process must not be able to read credentials
+      # out of the metadata service with a bare GET.
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: {Ref: DiskGb}
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: {Fn::Sub: "corenova-${AppName}"}
+        - Key: corenova:app
+          Value: {Ref: AppName}
+        - Key: corenova:image-tag
+          Value: {Fn::Select: [0, {Fn::Split: ["@", {Ref: ImageReference}]}]}
+        - Key: corenova:network-stack
+          Value: {Ref: NetworkStackName}
+        - Key: corenova:golden-run
+          Value: {Fn::If: [GoldenRunGiven, {Ref: GoldenRunId}, "none"]}
+      UserData:
+        Fn::Base64:
+          Fn::Sub: |
+            #!/bin/bash
+            # --- CoreNova Launch bootstrap ------------------------------------------------
+            # Installs only what cfn-init itself needs, then hands over to cfn-init, so every
+            # platform component (Docker / Nginx / CloudWatch / app container / signal) is proven
+            # through the same code path on a public AMI and on a future custom AMI.
+            set -u
+            exec > >(tee /var/log/corenova-user-data.log | logger -t corenova-user-data) 2>&1
+            mkdir -p /var/log/corenova /opt/corenova/bin /opt/corenova/etc /opt/corenova/env
+            cd /tmp
+
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -y || true
+            if ! apt-get install -y python3-pip python3-yaml curl; then
+              echo "[corenova] FATAL: cannot install cfn-init prerequisites"
+              echo 100 > /run/corenova-cfn-init.rc
+              curl -sS -X PUT -H 'Content-Type:' \
+                -d '{"Status":"FAILURE","Reason":"bootstrap packages unavailable","UniqueId":"corenova-bootstrap","Data":"100"}' \
+                '${WaitHandle}'
+              exit 100
+            fi
+            # PyPI 上 aws-cfn-bootstrap 只有 sdist 1.4-31，其依赖 python-daemon<2.0 在
+            # Ubuntu 24.04 / Python 3.12 下构建失败（实测：cfn-init 缺失 → 整条装机链 exit 127）。
+            # AWS 官方 tarball 才是这台机器上真正可用的安装路径。
+            pip3 install --break-system-packages aws-cfn-bootstrap >/dev/null 2>&1 || true
+            if ! command -v cfn-init >/dev/null 2>&1; then
+              curl -sSL -o /tmp/aws-cfn-bootstrap.tar.gz \
+                https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz \
+                && pip3 install --break-system-packages --quiet /tmp/aws-cfn-bootstrap.tar.gz
+            fi
+            for tool in cfn-init cfn-signal cfn-hup; do
+              if [ -x /usr/local/bin/"$tool" ]; then ln -sf /usr/local/bin/"$tool" /usr/bin/"$tool"; fi
+            done
+            if ! command -v cfn-init >/dev/null 2>&1; then
+              echo "[corenova] FATAL: cfn-init unavailable after both install paths"
+              echo 101 > /run/corenova-cfn-init.rc
+              curl -sS -X PUT -H 'Content-Type:' \
+                -d '{"Status":"FAILURE","Reason":"cfn-init unavailable","UniqueId":"corenova-bootstrap","Data":"101"}' \
+                '${WaitHandle}'
+              exit 101
+            fi
+
+            OVERRIDE=""
+            if [ -n "${InitOverrideUrl}" ]; then
+              if curl -fsSL "${InitOverrideUrl}" -o /opt/corenova/etc/init-override.json; then
+                OVERRIDE="--override file:///opt/corenova/etc/init-override.json"
+              fi
+            fi
+
+            # A bracketed shell array lookup cannot appear anywhere inside an Fn::Sub string: CFN
+            # parses every brace token as a variable name before escaping applies, and the index is
+            # not a legal name. The exit status is therefore captured with `|| rc=$?` instead.
+            INIT_RC=0
+            /usr/local/bin/cfn-init -v \
+              --stack "${AWS::StackName}" --resource Instance --region "${AWS::Region}" \
+              --configsets default $OVERRIDE \
+              > >(tee /var/log/corenova/cfn-init.log) 2>&1 || INIT_RC=$?
+            echo "$INIT_RC" > /run/corenova-cfn-init.rc
+            echo "[corenova] cfn-init(default) exit=$INIT_RC"
+
+            systemctl daemon-reload || true
+            for unit in docker nginx corenova-${AppName}; do
+              systemctl enable --now "$unit" 2>&1 | tee -a /var/log/corenova/systemd.log || true
+            done
+
+            # Signalling runs in its own process: the WaitCondition timeout is the single authority
+            # for "the platform path completed in time", and user-data must not mask a failed
+            # cfn-init as a generic instance error.
+            . /opt/corenova/etc/init.env
+            /opt/corenova/bin/40-ready-and-signal.sh 2>&1 | tee /var/log/corenova/signal.log &
+            exit 0
+
+Outputs:
+  InstanceId:
+    Description: Probe target for SSM SendCommand (there is no SSH).
+    Value: {Ref: Instance}
+    Export:
+      Name: {Fn::Sub: "${AWS::StackName}-InstanceId"}
+
+  PublicDnsName:
+    Value: {Fn::GetAtt: [Instance, PublicDnsName]}
+    Export:
+      Name: {Fn::Sub: "${AWS::StackName}-PublicDnsName"}
+
+  PublicIp:
+    Value: {Fn::GetAtt: [Instance, PublicIp]}
+    Export:
+      Name: {Fn::Sub: "${AWS::StackName}-PublicIp"}
+
+  PrivateIp:
+    Value: {Fn::GetAtt: [Instance, PrivateIp]}
+
+  ResolvedLaunchUrl:
+    Description: Public entry point (falls back to the instance public DNS when LaunchUrl is empty).
+    Value:
+      Fn::If:
+        - LaunchUrlGiven
+        - {Ref: LaunchUrl}
+        - {Fn::Sub: "http://${Instance.PublicDnsName}"}
+    Export:
+      Name: {Fn::Sub: "${AWS::StackName}-LaunchUrl"}
+
+  RoleArn:
+    Value: {Fn::GetAtt: [Role, Arn]}
+
+  InstanceProfileName:
+    Value: {Ref: InstanceProfile}
+
+  WaitConditionHandleUrl:
+    Description: Debug aid - the presigned URL a human may signal while iterating on a canary.
+    Value: {Ref: WaitHandle}
