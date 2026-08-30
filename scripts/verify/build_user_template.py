@@ -43,7 +43,7 @@ def build() -> dict:
         for k, v in (src.get("Conditions") or {}).items():
             conditions[k] = copy.deepcopy(v)
     # 反向条件：AmiId 留空 => ImageId 用 SSM 公共参数（CFN 对 Fn::Not 嵌套有解析怪癖）
-    conditions["UseSsmPublicAmi"] = {"Equals": [{"Ref": "AmiId"}, ""]}
+    conditions["UseSsmPublicAmi"] = {"Fn::Equals": [{"Ref": "AmiId"}, ""]}
 
     resources: dict = {}
     for name, spec in net["Resources"].items():
