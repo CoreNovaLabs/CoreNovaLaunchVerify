@@ -98,6 +98,33 @@ jobs:
           echo "sent=true" >> "$GITHUB_OUTPUT"
           echo "dispatch verified-update → ${REPO}"
 
+      # 模式 B（Cloudflare Pages Git 集成）：向 Repo A main 推一个数据标记 commit，
+      # push 会触发 Cloudflare 构建。与 dispatch（模式 A）并存，二者都"只是提示"，不写事实源。
+      - name: Push data marker to Repo A (triggers Cloudflare Git build)
+        env:
+          REPO: ${{ steps.payload.outputs.repo }}
+          APPS: ${{ steps.payload.outputs.apps }}
+          VID: ${{ steps.payload.outputs.verification_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REPO_A_PAT:-}" ] || [ -z "${REPO:-}" ]; then
+            echo "::warning::未配置 REPO_A_PAT → 跳过数据标记推送（Cloudflare Git 集成不会自动重建）。"
+            exit 0
+          fi
+          BODY=$(printf '{"apps":%s,"verification_id":"%s","updated_at":"%s"}' \
+            "${APPS:-[]}" "${VID:-}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          ENC=$(printf '%s' "$BODY" | base64 | tr -d '\n')
+          # 先取现有 sha（更新需要），不存在则创建
+          SHA=$(curl -sS -H "Authorization: Bearer ${REPO_A_PAT}" -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/contents/.corenova/last-verified.json" \
+            | python -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' 2>/dev/null || true)
+          if [ -n "${SHA}" ]; then SHA_ARG=",\"sha\":\"${SHA}\""; else SHA_ARG=""; fi
+          curl -sS -f -X PUT \
+            -H "Authorization: Bearer ${REPO_A_PAT}" -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/contents/.corenova/last-verified.json" \
+            --data "{\"message\":\"chore(data): verified ${VID:-update}\",\"content\":\"${ENC}\"${SHA_ARG}}" \
+            >/dev/null
+          echo "data marker pushed → ${REPO} (.corenova/last-verified.json)"
       - name: Job summary
         if: always()
         # 表达式一律先进 env，再在 shell 里引用 "$VAR"：

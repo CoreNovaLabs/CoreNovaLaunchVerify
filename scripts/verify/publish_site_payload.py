@@ -81,8 +81,9 @@ def main(argv: list[str] | None = None) -> int:
 
     out_file = os.environ.get("GITHUB_OUTPUT")
     if out_file:
+        vid = (payload.get("client_payload") or {}).get("verification_id", "")
         with open(out_file, "a", encoding="utf-8") as fh:
-            fh.write(f"apps={json.dumps(apps)}\nrepo={cfg.site_repo}\n")
+            fh.write(f"apps={json.dumps(apps)}\nrepo={cfg.site_repo}\nverification_id={vid}\n")
     return 0
 
 
