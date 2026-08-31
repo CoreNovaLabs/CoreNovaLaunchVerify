@@ -84,6 +84,9 @@ def build() -> dict:
                     "Optional. Leave empty to use the latest Canonical Ubuntu 24.04 "
                     "LTS AMI via the AWS public SSM parameter."
                 )
+            if k == "TerminationProtection":
+                # 一键评估默认不锁定实例（用户可显式选 Enabled）；三栈生产模板保持 Enabled
+                v["Default"] = "Disabled"
             parameters[k] = v
 
     # 一键部署用户只需要入口地址和定位实例的 ID，其余是三栈内部落地细节（噪声）。
