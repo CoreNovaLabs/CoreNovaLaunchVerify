@@ -121,11 +121,24 @@ Manifest: https://pub-xxxx.r2.dev/screenshots/ghost/v5.75.0/home.png
 - 镜像失败（对象 404）→ Repo A 构建**必须失败**，不得静默产出图裂的页面（这正是 verification-manifest.md §6.2 P3 探测要防的事故）。
 - 引导期后端为本地 fixtures 时，同一逻辑从目录读取同名文件后镜像，路径规则不变。
 
+### 2.4 one-click 模板分发（公开 S3 直链 = 深链 URL 源）
+
+`Generate Template` 深链的 `templateURL` 指向 Repo C 发布的公开读 S3 直链
+`https://<bucket>.s3.us-east-1.amazonaws.com/corenova-one-click.template.yaml`（CloudFormation 控制台原生支持，一点即进创建向导）：
+
+- 模板由 Repo C `scripts/verify/build_user_template.py` 从 `templates/cloudformation/fixed/*.yaml` 合成，
+  `publish-template.yml` 在 fixed 栈变化时发布；`corenova/template_publish.py` put 后以**匿名 GET 探测**，
+  不可读即失败（与 §2.3 镜像失败即构建失败同一精神：深链绝不指向读不到的对象）。
+- 模板 URL 是**基础设施配置**而非验证证据 -> **不进** `current.json` / Manifest；Repo A 以构建期常量引用
+  （`src/lib/deploy.ts`，`VITE_ONE_CLICK_TEMPLATE_URL` 可覆盖），默认值必须与 Repo C `TEMPLATE_S3_BUCKET`
+  指向同一只桶（repo-structure.md §4.4）。
+
 ## 3. 字段来源约束（禁止前端猜测）
 
 | 网站展示项 | 来源字段 | 是否允许前端推断 |
 |-----------|---------|----------------|
 | Deploy 按钮链接 | `deploy.launch_url` | ❌ 必须来自 Manifest |
+| one-click 深链 templateURL | 构建期常量（§2.4 公开 S3 直链） | ❌ 不得拼站点 origin / 自托管副本 |
 | 文档链接 | `deploy.documentation_url` | ❌ 必须来自 Manifest |
 | 支持区域 | `deploy.regions` | ❌ 必须来自 Manifest |
 | 更新类型徽章（New Version / Security Update） | `release.type` | ❌ **必须来自数据**，前端不得按版本号猜 |
@@ -247,6 +260,7 @@ Manifest: https://pub-xxxx.r2.dev/screenshots/ghost/v5.75.0/home.png
 - ❌ 版本页渲染契约里不存在的检查项（如 `Docker Build` / `API Test`）——检查项名称以 §3.1 映射表为唯一准绳。
 - ❌ 把 `github_stars` / `success_rate` 等构建期派生统计塞进 `current.json`（应落 `data/stats.json`，见 §5.1）。
 - ❌ 没有 `index.json` 就靠枚举猜测 app 列表（§2.1）。
+- ❌ 深链 templateURL 用站点自身 origin（`window.location.origin + /templates/...`）或 Repo A 自托管模板副本，而非公开 S3 直链（§2.4：站点副本会与验证所用模板漂移）。
 - ❌ 渲染两阶段提交中间态的占位版本记录（三项上传 check 为 `false`，见 §2.2）。
 - ❌ 前端自行拼接截图对象路径（必须用 `screenshots[].url` 原值）。
 - ❌ 未验证的上游新版本在网站上显示为"已验证"或"待验证"占位卡（未 `PUBLISHED` 的应用根本不进 R2）。

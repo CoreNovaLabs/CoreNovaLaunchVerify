@@ -9,6 +9,7 @@
   所以用反向 Condition（AmiId 为空）+ Fn::If 实现——同时避开 CFN 对 Fn::Not 的解析怪癖。
 
     python scripts/verify/build_user_template.py --out data/templates/corenova-one-click.template.yaml
+    python scripts/verify/build_user_template.py --publish-s3   # 追加：发布到公开读桶（深链 URL 源）
 
 输出与 app.yaml 的注释版不同属预期（yaml.safe_dump，注释不保留；canary.yaml 同理）。
 """
@@ -125,6 +126,11 @@ def main() -> int:
         "--out",
         default=str(ROOT / "data" / "templates" / "corenova-one-click.template.yaml"),
     )
+    ap.add_argument(
+        "--publish-s3",
+        action="store_true",
+        help="发布到公开读 S3 桶（TEMPLATE_S3_BUCKET；put 后匿名 GET 探测，不可读即失败）",
+    )
     args = ap.parse_args()
 
     tpl = build()
@@ -146,6 +152,20 @@ def main() -> int:
             print(f"FAIL: merged template still references {bad.strip()}")
             return 1
     print("rewire check: OK")
+
+    if args.publish_s3:
+        # 深链 templateURL 的唯一事实源（deployment-contract.md §2.4）：
+        # 模板活在公开桶里，站点不再自托管副本。发布失败必须让本脚本退出非零。
+        sys.path.insert(0, str(ROOT))
+        from corenova import template_publish
+        from corenova.config import Config
+
+        try:
+            info = template_publish.publish(Config.load(), text.encode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - 发布失败要红给 CI 看，不吞
+            print(f"FAIL: S3 发布失败：{type(exc).__name__}: {exc}")
+            return 1
+        print(f"published: {info['url']} ({info['bytes']} bytes, {info['readable_via']})")
     return 0
 
 

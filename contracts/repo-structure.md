@@ -40,15 +40,17 @@ CoreNovaLaunch/                            # umbrella（GitHub: CoreNovaLaunch�
 │   │   │   ├── resolve_image.py           #   RESOLVED：tag 模板 → 精确 tag + digest
 │   │   │   ├── run_application_verify.py  #   VERIFYING：compose→就绪→断言→测试→截图→报告
 │   │   │   ├── publish.py                 #   PUBLISHING：两阶段提交（dir / r2 两后端）
+│   │   │   ├── build_user_template.py     #   one-click 模板：fixed 栈 -> 单栈模板（--publish-s3 -> 公开桶 §4.4）
 │   │   │   └── golden_verify.py           #   Platform Verification + 写 Platform Contract
 │   │   ├── ai-test/{analyze-failure,generate-report}.py
 │   │   └── monitor/{check_versions,failure_issue}.py   # 版本发现 + §7 失败台账
 │   ├── data/                              # 引导期 fixtures 输出（.gitignore，非事实源）
-│   │   ├── verified/  ├── platform/  └── reports/
+│   │   ├── verified/  ├── platform/  ├── templates/  └── reports/
 │   └── .github/workflows/
 │       ├── monitor-versions.yml           # 每 6h 发现新版本
 │       ├── application-verify.yml         # GitHub Application Verification（默认无 AWS）
 │       ├── golden-verify.yml              # AWS Golden Verification（平台变更触发）
+│       ├── publish-template.yml           # fixed 栈变化 -> one-click 模板发布公开 S3（§4.4）
 │       ├── publish-site.yml               # repository_dispatch → Repo A
 │       └── reverify-failed.yml            # 定时重试失败（仅 TRANSIENT）
 │
@@ -162,6 +164,28 @@ r2://<bucket>/
 
 每次 `current.json` / `versions/*.json` 必须包含 `verification_id` 及不可变输入（`app_version`、`container.digest`、`ami_id`、`config.*_revision` 等），见 verification-manifest.md。
 
+### 4.4 one-click 模板公开分发（S3 直链 = 深链 URL 源）
+
+官网 `Generate Template` 深链的 `templateURL` 指向 Repo C 发布的公开读 S3 直链：
+
+```
+https://<bucket>.s3.us-east-1.amazonaws.com/corenova-one-click.template.yaml
+```
+
+CloudFormation 控制台原生支持该 URL 形态，深链一点即进创建向导（应用参数拼在深链上）。约束：
+
+- **发布链路**：`templates/cloudformation/fixed/{network,app}.yaml` 变化（或手动 dispatch）触发
+  Repo C `publish-template.yml` -> `build_user_template.py --publish-s3` -> `corenova/template_publish.py`
+  put 到公开桶 + **匿名 GET 探测**（非 200 / 字节不一致 = 发布失败，深链绝不指向读不到的对象）。
+- **桶要求**：us-east-1、公开读（对象 ACL `public-read` 或桶策略 `Allow s3:GetObject`，put 两者
+  兼容、探测统一把关）；桶内只放这一个对象。它是**附加分发渠道，不是第二个事实源后端**--
+  verified JSON / 截图 / Platform Contract 仍走 dir|r2（§4.2.1），模板也不进 Manifest。
+- **模板内容 app 无关**、只在 fixed 栈变化时变化 -> 不挂每次验证的 PUBLISHING
+  （`application-verify` 默认无 AWS，不为模板分发多背一份凭据）。
+- **Repo A 深链 URL 来源**：构建期常量（`src/lib/deploy.ts`，`VITE_ONE_CLICK_TEMPLATE_URL` 可覆盖），
+  默认值必须与 Repo C 的 `TEMPLATE_S3_BUCKET` 指向同一只桶；**禁止**拼站点自身 origin
+  或在 Repo A 自托管模板副本（两个分发渠道必然漂移）。
+
 ## 5. 边界与反模式
 
 - ❌ Repo A 不得持有 `AWS_*` 或任何部署/验证密钥。
@@ -175,6 +199,7 @@ r2://<bucket>/
 - ❌ 在上传前把 `checks.*_uploaded` 写成 `true`，或上传后不做对象可读性探测就更新 `current.json`（见 verification-manifest.md §6）。
 - ❌ 用移动 tag（`ghost:5-alpine`）充当被验证镜像却声称具体 `app_version`（见 app-schema.md §3.1）。
 - ❌ 把 `github_stars` / `success_rate` 等构建期统计塞进 `current.json`（应落 Repo A 的 `data/stats.json`，见 deployment-contract.md §5.1）。
+- ❌ 深链 templateURL 拼站点自身 origin、或 Repo A 自托管 `/templates/` 模板副本--分发渠道必须唯一：公开 S3 直链（§4.4）。
 - ✅ 跨仓唯一耦合点：`repository_dispatch`(PAT) + SSM(AMI) + R2(verified JSON/截图/Platform Contract)。
 
 ## 6. Secrets 汇总（KEY_PAIR_NAME 已移除默认必填）
@@ -186,6 +211,7 @@ r2://<bucket>/
 | `R2_BUCKET_NAME` | A、C | verified JSON / 截图 / Platform Contract 存储 |
 | `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | A(读)、C(写) | **R2 走 S3 兼容 API 必需的 Access Key**（`CLOUDFLARE_API_TOKEN` 不能签 S3 请求，缺这两项则上传/下载全部失败）；在 R2 → Manage R2 API Tokens 创建 |
 | `R2_PUBLIC_BASE_URL` | A、C | 截图/报告的公开访问前缀（`https://pub-<hash>.r2.dev` 或自定义域）；Manifest 里的 `screenshots[].url` / `report_url` 由它拼出 |
+| `TEMPLATE_S3_BUCKET` | C | one-click 模板公开读桶名（us-east-1，`publish-template.yml` 用）；深链 templateURL 直链 `https://<bucket>.s3.us-east-1.amazonaws.com/corenova-one-click.template.yaml` 的桶（§4.4） |
 | `REPO_A_PAT` | C | 跨仓 `repository_dispatch` |
 | `VERIFIED_BACKEND` | A、C | 可选。显式指定优先；未指定时按环境选默认——本地 `dir`、CI/云端构建 `r2`（§4.2.1）。禁止的仍是**失败回退**，不是按环境选默认 |
 | `KEY_PAIR_NAME` | — | **已删除**：基础 AMI 用 SSM Session Manager，关闭 22 入站；仅在显式 `debug mode` 才允许，默认不配置 |

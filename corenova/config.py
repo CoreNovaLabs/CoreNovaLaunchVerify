@@ -73,6 +73,24 @@ class Config:
     def r2_endpoint(self) -> str:
         return os.environ.get("R2_ENDPOINT") or (self.verify.get("r2") or {}).get("endpoint") or ""
 
+    # ---- one-click template distribution (public-read S3) ------------------
+    # 深链 templateURL 的直链桶（deployment-contract.md §2.4）：与 verified 后端无关
+    @property
+    def template_bucket(self) -> str:
+        return (
+            os.environ.get("TEMPLATE_S3_BUCKET")
+            or (self.verify.get("template_s3") or {}).get("bucket")
+            or ""
+        ).strip()
+
+    @property
+    def template_s3_region(self) -> str:
+        return (
+            os.environ.get("TEMPLATE_S3_REGION")
+            or (self.verify.get("template_s3") or {}).get("region")
+            or "us-east-1"
+        ).strip()
+
     @property
     def registry_mirror(self) -> str:
         return (os.environ.get("CORENOVA_REGISTRY_MIRROR") or self.verify.get("registry_mirror") or "").strip().rstrip("/")

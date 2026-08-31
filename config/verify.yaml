@@ -14,6 +14,15 @@ r2:
   endpoint: ""                        # 可选：自定义 R2 S3 endpoint
   # 凭据只从环境变量读：R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
 
+# one-click 用户模板的公开分发桶（us-east-1，公开读）。
+# 深链 templateURL 用 https://<bucket>.s3.us-east-1.amazonaws.com/corenova-one-click.template.yaml
+# 直链（CFN 控制台原生支持）；publish-template.yml 在 fixed 栈变化时发布并匿名探测可读性。
+# 桶名优先取 TEMPLATE_S3_BUCKET（secret/环境）；为空 = 未接入，publish-template.yml 会拒绝而非静默跳过。
+# 与 verified_backend（dir|r2）无关：这里只放模板这一个对象，不是第二个事实源后端。
+template_s3:
+  bucket: ""
+  region: us-east-1
+
 # 镜像仓库前缀改写（例如国内网络无法直连 Docker Hub，可设 docker.m.daocloud.io）
 # GitHub Actions runner 上留空即可直连
 registry_mirror: ""

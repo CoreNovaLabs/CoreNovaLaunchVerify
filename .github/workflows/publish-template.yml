@@ -1,0 +1,92 @@
+# publish-template.yml - one-click 用户模板的公开 S3 分发（deployment-contract.md §2.4）
+#
+# 深链 templateURL 指向 https://<bucket>.s3.us-east-1.amazonaws.com/corenova-one-click.template.yaml
+# （CFN 控制台原生支持该直链），所以模板必须活在那个 URL 上、且与 fixed 栈同源：
+#   1) build_user_template.py 从 templates/cloudformation/fixed/{network,app}.yaml 合成单栈模板
+#   2) corenova/template_publish.py put 到公开读桶 + 匿名 GET 探测（不可读 = 失败，绝不算发布成功）
+#
+# 模板内容 app 无关、只有 fixed 栈变化才会变 -> 路径过滤触发，不挂每次验证
+# （application-verify 默认无 AWS，也不该为模板分发多背一份凭据）。
+#
+# 桶的公开读二选一（put 两种都兼容，探测统一把关）：
+#   ① 对象 ACL public-read：桶需放行 ACL（Block Public Access 关闭 ACL 阻断）
+#   ② 桶策略 Allow s3:GetObject for principal "*"（2023+ 新桶默认禁 ACL，只能走这条）
+name: publish-template
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "templates/cloudformation/fixed/**"
+      - "scripts/verify/build_user_template.py"
+      - "corenova/template_publish.py"
+      - "corenova/config.py"
+      - "config/verify.yaml"
+      - ".github/workflows/publish-template.yml"
+  workflow_dispatch:
+
+# 桶里只有一个对象，全局单组即可；不打断正在进行的发布（探测不过自然红）。
+concurrency:
+  group: publish-template
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: put one-click template -> public S3
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+      TEMPLATE_S3_BUCKET: ${{ secrets.TEMPLATE_S3_BUCKET }}
+    steps:
+      # 本工作流的全部职责就是发布到 S3：桶名/凭据缺失必须红，不存在"跳过"这种结果
+      - name: Guard - TEMPLATE_S3_BUCKET 与 AWS 凭据必填
+        env:
+          HAS_AWS: ${{ secrets.AWS_ACCESS_KEY_ID != '' && '1' || '' }}
+          BUCKET: ${{ secrets.TEMPLATE_S3_BUCKET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BUCKET//[[:space:]]/}" ]; then
+            echo "::error::未配置 TEMPLATE_S3_BUCKET（repo-structure.md §6）。"
+            echo "先在 us-east-1 创建公开读桶并配好 secret，再重跑本工作流。"
+            exit 1
+          fi
+          if [ -z "${HAS_AWS}" ]; then
+            echo "::error::publish-template 需要 AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY（repo-structure.md §6）。"
+            exit 1
+          fi
+          echo "目标桶：${BUCKET}"
+
+      - name: Checkout Repo C
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build + publish one-click template
+        run: python scripts/verify/build_user_template.py --publish-s3
+
+      - name: Job summary
+        if: always()
+        env:
+          BUCKET: ${{ secrets.TEMPLATE_S3_BUCKET }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Publish One-Click Template"
+            echo ""
+            echo "- 目标：\`https://${BUCKET}.s3.us-east-1.amazonaws.com/corenova-one-click.template.yaml\`"
+            echo "- 该 URL 是官网 Generate Template 深链的 templateURL 源（deployment-contract.md §2.4）"
+            echo "- 发布判据：匿名 GET 探测 200 且字节一致（corenova/template_publish.py）"
+          } >> "$GITHUB_STEP_SUMMARY"
