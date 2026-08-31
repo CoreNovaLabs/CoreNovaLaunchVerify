@@ -11,6 +11,7 @@ import os
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
+from urllib.parse import quote as _urlencode
 
 from .util import HttpError, http_json, http_request, is_transitional_error, log
 
@@ -108,7 +109,7 @@ def find_issue(record: FailureRecord) -> dict[str, Any] | None:
         return None
     q = f"repo:{repo} is:issue in:title {record.verification_id}"
     try:
-        hits = http_json(f"https://api.github.com/search/issues?q={q}&per_page=5", headers=_headers())
+        hits = http_json(f"https://api.github.com/search/issues?q={_urlencode(q, safe='')}&per_page=5", headers=_headers())
     except HttpError as exc:
         log(f"查询失败台账出错（忽略）：{exc}")
         return None
@@ -179,7 +180,7 @@ def open_transient_failures(limit: int = 20) -> list[dict[str, Any]]:
     q = f"repo:{repo} is:issue is:open label:{LABEL} label:classification:TRANSIENT"
     try:
         hits = http_json(
-            f"https://api.github.com/search/issues?q={q}&per_page={limit}", headers=_headers()
+            f"https://api.github.com/search/issues?q={_urlencode(q, safe='')}&per_page={limit}", headers=_headers()
         )
     except HttpError as exc:
         log(f"读取失败台账出错：{exc}")
@@ -208,7 +209,7 @@ def pending_review_failures(limit: int = 30) -> list[dict[str, Any]]:
     for cls in ("APPLICATION", "TEST", "INFRASTRUCTURE", "MANUAL_REQUIRED"):
         q = f"repo:{repo} is:issue is:open label:{LABEL} label:classification:{cls}"
         try:
-            hits = http_json(f"https://api.github.com/search/issues?q={q}&per_page={limit}", headers=_headers())
+            hits = http_json(f"https://api.github.com/search/issues?q={_urlencode(q, safe='')}&per_page={limit}", headers=_headers())
         except HttpError:
             continue
         for it in hits.get("items") or []:
