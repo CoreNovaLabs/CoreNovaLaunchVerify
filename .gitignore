@@ -1,6 +1,9 @@
 # 引导期 fixtures 输出：开发链路产物，不是事实源，不进 Git（repo-structure.md §4.2.1）
+# 但平台契约（Golden Verification 产出）是 application-verify 的前置门禁，
+# CI runner 必须能读到它 -> 引导期显式提交，接入 R2 后可移除。
 data/
 !data/.gitkeep
+!data/platform/
 
 __pycache__/
 *.py[cod]
