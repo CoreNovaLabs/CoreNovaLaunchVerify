@@ -73,7 +73,6 @@ tests:
 
 deployment:
   size: "small"
-  launch_url_template: "https://{app}.{region}.corenovalaunch.app"
   documentation_url: "https://ghost.org/docs/"
   regions: ["us-east-1"]
 
