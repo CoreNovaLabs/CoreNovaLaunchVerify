@@ -85,7 +85,13 @@ def build() -> dict:
     outputs: dict = {}
     for src in (net, app):
         for k, v in (src.get("Outputs") or {}).items():
-            outputs[k] = copy.deepcopy(v)
+            v = copy.deepcopy(v)
+            # 单栈模板自包含：Export 面向三栈架构（network 被其他栈消费），
+            # 保留会在用户账号里与既有 corenova-network 栈的导出名同名冲突
+            # （"Export with name corenova-network-VpcId is already exported"
+            #   -> CREATE 即回滚，2026-08-31 线上事故）。Outputs 的 Value 照留。
+            v.pop("Export", None)
+            outputs[k] = v
 
     return {
         "AWSTemplateFormatVersion": "2010-09-09",
@@ -147,7 +153,15 @@ def main() -> int:
     )
 
     text = out_path.read_text(encoding="utf-8")
-    for bad in ("Ref: SubnetId\n", "Ref: SecurityGroupId\n", "Ref: NetworkStackName\n"):
+    # 自包含校验：旧网络栈的参数引用必须重接；跨栈导出/导入一律不允许
+    # （Export 与用户账号里既有的三栈导出同名冲突，ImportValue 在单栈里无源可导）。
+    for bad in (
+        "Ref: SubnetId\n",
+        "Ref: SecurityGroupId\n",
+        "Ref: NetworkStackName\n",
+        "Export:\n",
+        "Fn::ImportValue:",
+    ):
         if bad in text:
             print(f"FAIL: merged template still references {bad.strip()}")
             return 1
