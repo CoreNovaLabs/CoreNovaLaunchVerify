@@ -30,7 +30,7 @@ FIXED = ROOT / "templates" / "cloudformation" / "fixed"
 DROP_PARAMS = ("SubnetId", "SecurityGroupId", "NetworkStackName")
 
 SSM_PUBLIC_AMI = (
-    "{{resolve:ssm-public:/aws/service/canonical/ubuntu/server/24.04/stable/"
+    "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/"
     "current/amd64/hvm/ebs-gp3/ami-id}}"
 )
 
@@ -56,15 +56,19 @@ def build() -> dict:
             text.replace("Ref: SubnetId\n", "Ref: PublicSubnetA\n")
             .replace("Ref: SecurityGroupId\n", "Ref: BaseSG\n")
             .replace("Ref: NetworkStackName\n", "Ref: AWS::StackName\n")
-            .replace(
-                "ImageId:\n          Ref: AmiId\n",
-                "ImageId:\n          Fn::If:\n"
-                "            - UseSsmPublicAmi\n"
-                "            - " + SSM_PUBLIC_AMI + "\n"
-                "            - Ref: AmiId\n",
-            )
         )
         resources[name] = yaml.safe_load(text)
+
+    # ImageId 走结构化替换：此前用按缩进匹配的文本替换（写死 10 空格），app.yaml
+    # 的 dump 缩进对不上时**静默失配** -> 模板残留裸 Ref: AmiId，深链不传 AmiId 时
+    # ImageId 为空串，RunInstances 报 "must contain the parameter ImageId"
+    # （2026-08-31 线上事故之二）。条件分支见上方 UseSsmPublicAmi。
+    for spec in resources.values():
+        props = (spec or {}).get("Properties") or {}
+        if isinstance(props.get("ImageId"), dict) and props["ImageId"].get("Ref") == "AmiId":
+            props["ImageId"] = {
+                "Fn::If": ["UseSsmPublicAmi", SSM_PUBLIC_AMI, {"Ref": "AmiId"}]
+            }
 
     parameters: dict = {}
     for src in (net, app):
@@ -165,6 +169,11 @@ def main() -> int:
         if bad in text:
             print(f"FAIL: merged template still references {bad.strip()}")
             return 1
+    # 正向自检：ImageId 的 Fn::If 分支必须带着 SSM 公共参数动态引用进来
+    # （文本替换失配时它会静默消失，负向检查抓不住）。
+    if "resolve:ssm:" not in text:
+        print("FAIL: ImageId 丢失 SSM 公共 AMI 动态引用（UseSsmPublicAmi 分支未注入）")
+        return 1
     print("rewire check: OK")
 
     if args.publish_s3:
