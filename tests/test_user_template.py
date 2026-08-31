@@ -31,8 +31,10 @@ def build(tmp_path: pathlib.Path) -> dict:
 
 def test_merged_template_has_no_cross_stack_exports(tmp_path):
     tpl = build(tmp_path)
-    assert tpl.get("Outputs"), "单栈模板仍应保留 Outputs 的 Value（控制台展示用）"
-    for key, o in tpl["Outputs"].items():
+    outputs = tpl.get("Outputs") or {}
+    # 一键部署用户只需要入口地址和定位实例的 ID（网络/ IAM 等落地细节已剔除）
+    assert set(outputs) == {"InstanceId", "PublicIp", "PublicDnsName", "PrivateIp", "ResolvedLaunchUrl"}
+    for key, o in outputs.items():
         assert "Export" not in o, f"Output {key!r} 仍带 Export 块：{o.get('Export')}"
 
 

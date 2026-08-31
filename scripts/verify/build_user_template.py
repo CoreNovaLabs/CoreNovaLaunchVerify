@@ -86,9 +86,13 @@ def build() -> dict:
                 )
             parameters[k] = v
 
+    # 一键部署用户只需要入口地址和定位实例的 ID，其余是三栈内部落地细节（噪声）。
+    KEEP_OUTPUTS = {"InstanceId", "PublicIp", "PublicDnsName", "PrivateIp", "ResolvedLaunchUrl"}
     outputs: dict = {}
     for src in (net, app):
         for k, v in (src.get("Outputs") or {}).items():
+            if k not in KEEP_OUTPUTS:
+                continue
             v = copy.deepcopy(v)
             # 单栈模板自包含：Export 面向三栈架构（network 被其他栈消费），
             # 保留会在用户账号里与既有 corenova-network 栈的导出名同名冲突
