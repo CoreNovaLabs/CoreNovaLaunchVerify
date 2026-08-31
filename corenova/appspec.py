@@ -258,6 +258,14 @@ def validate(spec: AppSpec, root: Path, platform_region: str) -> list[str]:
         if "reason:" not in spec.raw:
             e.append("规则15: release_type_override 非空必须带 `# reason:` 注释")
 
+    # 16 extra_environment：KEY=VALUE 形式、禁止敏感词（密钥走 SSM/Secrets）
+    for i, item in enumerate(g("deploy.extra_environment") or []):
+        s = str(item)
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.+$", s):
+            e.append(f"规则16: extra_environment[{i}] 必须为 KEY=VALUE 形式：{s!r}")
+        elif re.search(r"secret|password|token|private_key", s, re.I):
+            e.append(f"规则16: extra_environment[{i}] 含敏感词，敏感值走 SSM/Secrets，不进 app schema")
+
     # tests 目录
     tdir = g("tests.predefined_dir")
     if not tdir:

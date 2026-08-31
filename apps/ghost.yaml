@@ -31,6 +31,12 @@ deploy:
   image_tag_template: "ghost:{version_no_v}-alpine"
   container_port: 2368
   compose_file: "apps/ghost/docker-compose.yml"
+  # one-click 模板经 ExtraEnvironment 注入的应用私有 env（非敏感；密钥走 SSM/Secrets）。
+  # Ghost 单容器用内嵌 SQLite，否则默认连 127.0.0.1:3306 而崩溃。
+  extra_environment:
+    - "database__client=sqlite3"
+    - "database__connection__filename=/var/lib/ghost/content/data/ghost.db"
+    - "database__useNullAsDefault=true"
   # instance_type / disk_gb 不写：由 deployment.size 推导（stateful_app / small = t3.small / 30GB）
 
 health_check:

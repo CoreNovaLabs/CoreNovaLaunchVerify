@@ -128,6 +128,7 @@ def build(
             "instance_type": instance_type,
             "container_port": spec.container_port,
             "docker_image": image.image_ref,
+            "extra_environment": spec.g("deploy.extra_environment") or [],
         },
         "release": {
             "type": resolved.release_type,

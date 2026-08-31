@@ -56,6 +56,10 @@ deploy:                               # required, 容器部署唯一事实源
   # instance_type / disk_gb 见下方注释；资源档优先用 deployment.size 选择
   instance_type: "t3.small"          # optional, string；缺省由 deployment.size 推导（app-profiles.md §3）；显式写=按维度覆盖，向上自由、低于 min_size 地板需 `# override: <reason>`
   disk_gb: 20                         # optional, integer；缺省由 deployment.size 推导；同上
+  extra_environment:                  # optional, string[]（KEY=VALUE）；应用私有、**非敏感**环境变量，
+    - "database__client=sqlite3"      #   one-click 模板经 ExtraEnvironment 参数注入（env-file）。
+    - "database__connection__filename=/var/lib/ghost/content/data/ghost.db"  # 密钥禁止放这里（走 SSM/Secrets）。
+    - "database__useNullAsDefault=true"
 
 resources:                            # optional（legacy）；优先用 deployment.size + deploy.instance_type/disk_gb；与 deploy.* 二选一，若都写必须相等（校验报错）
   instance_type: "t3.small"          # 缺省由 deployment.size 推导；显式写=向上自由、低于 min_size 地板需 `# override: <reason>`
@@ -135,6 +139,7 @@ website:                              # required
 | `deploy.compose_file` | ✅ | string | — | 文件必须存在且用变量替换 |
 | `deploy.instance_type` | ❌ | string | — | AWS 实例类型；缺省由 `deployment.size` 推导 |
 | `deploy.disk_gb` | ❌ | int | — | ≥ 8；缺省由 `deployment.size` 推导 |
+| `deploy.extra_environment` | ❌ | string[] | `[]` | `KEY=VALUE` 形式的应用私有**非敏感** env；one-click 模板经 `ExtraEnvironment` 注入；值含 secret/password/token 等敏感词即校验失败 |
 | `deployment.size` | ❌ | enum | app_type 的 `default_size` | small/medium/large/xlarge；必须 ≥ 本 app_type 的 `min_size` |
 | `health_check.endpoint` | ✅ | string | — | 以 `/` 开头 |
 | `health_check.expected_status` | ✅ | int | — | 2xx/3xx；非此范围需显式注释 |
@@ -248,6 +253,7 @@ health_check:
 13. `website.features[]` 若存在，每项 `en` 与 `zh` 均非空（缺一即失败，禁止网站一侧显示另一语言）。
 14. v1 单区域约束：`deployment.regions` 必须恰好等于 `[<所引用 Platform Contract.region>]`；写多区域即校验失败（防止前端显示"已支持"而平台契约不存在，见 platform-contract.md §7）。
 15. `release_type_override` 非空时，同一逻辑行或其紧邻上一行必须含 `# reason:` 注释，且值 ∈ 四枚举（deployment-contract.md §4.1）。
+16. `deploy.extra_environment` 每项必须匹配 `^[A-Za-z_][A-Za-z0-9_]*=.+$`（KEY=VALUE）；KEY 或 VALUE 含 `secret`/`password`/`token`/`private_key`（不区分大小写）即校验失败——敏感值走 SSM Parameter Store / Secrets，不进 app schema（§7 单容器边界同理）。
 
 ## 6. 反模式
 
