@@ -70,11 +70,14 @@ jobs:
 
       # Gate 复核 + 组装 payload：形状严格照 repo-structure.md §4.1
       # 逻辑放 scripts/verify/publish_site_payload.py（工作流里塞长 python 无法本地测）
+      # 必须用块标量（run: |）：plain 多行标量会被 YAML 折叠成单行，
+      # `\` 续行符会粘进前一个词 → argparse 丢参数（实测 --payload-file 被吃掉）。
       - name: Build dispatch payload from published state
         id: payload
-        run: python scripts/verify/publish_site_payload.py \
-              --app "${{ inputs.app_name }}" \
-              --payload-file "${RUNNER_TEMP}/payload.json"
+        run: |
+          python scripts/verify/publish_site_payload.py \
+            --app "${{ inputs.app_name }}" \
+            --payload-file "${RUNNER_TEMP}/payload.json"
 
       - name: 未配置跨仓凭据 → 明确跳过（引导期正常）
         id: send
