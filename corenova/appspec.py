@@ -1,4 +1,4 @@
-"""Load `apps/{app}.yaml` and enforce app-schema.md §5 (15 rules) + app-profiles.md.
+"""Load `apps/{app}.yaml` and enforce app-schema.md §5 (17 rules) + app-profiles.md.
 
 The validator is deliberately self-contained: Repo C's CI must be able to reject a bad
 registration before any Docker / AWS / network work happens.
@@ -54,7 +54,11 @@ class AppSpec:
 
     @property
     def container_port(self) -> int:
-        return int(self.g("deploy.container_port", 0))
+        raw = self.g("deploy.container_port", 0)
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            raise ValueError(f"deploy.container_port 必须为整数，实际值为 {raw!r}")
 
     @property
     def source_repo(self) -> str:
@@ -84,8 +88,15 @@ class AppSpec:
         eff_size, min_size, _default = self.size()
         # 越界档位（如 database 选 small）由 §5 规则 10 报错，这里退回地板档推导以免崩在 None 上
         base = profiles.derive(self.app_type, eff_size) or profiles.derive(self.app_type, min_size)
+        if base is None:
+            raise ValueError(
+                f"app-profiles: {self.app_type} 在 {eff_size!r} 和 {min_size!r} 档均无资源配置"
+            )
         base_instance, base_disk = base
-        min_instance, min_disk = profiles.derive(self.app_type, min_size)
+        min_res = profiles.derive(self.app_type, min_size)
+        if min_res is None:
+            raise ValueError(f"app-profiles: {self.app_type} 在 min_size={min_size!r} 档无资源配置")
+        min_instance, min_disk = min_res
         instance = self.g("deploy.instance_type") or self.g("resources.instance_type") or base_instance
         disk = self.g("deploy.disk_gb") or self.g("resources.disk_gb") or base_disk
         # 低于 min_size 地板必须带 `# override: <reason>`
@@ -190,20 +201,32 @@ def validate(spec: AppSpec, root: Path, platform_region: str) -> list[str]:
         e.append(f"规则14: v1 单区域，deployment.regions={regions} 必须等于 [{platform_region!r}]")
 
     # 8 scenarios ↔ screenshots_order ↔ Manifest
-    slugs = [str(s.get("slug", "")) for s in spec.scenarios]
-    if len(slugs) != len(set(slugs)):
-        e.append("规则8: tests.scenarios[].slug 重复")
-    for s in spec.scenarios:
+    scenarios = spec.scenarios
+    if not isinstance(scenarios, list):
+        e.append(f"规则8: tests.scenarios 必须是列表，实为 {type(scenarios).__name__}")
+        scenarios = []
+    slugs: list[str] = []
+    for i, s in enumerate(scenarios):
+        if not isinstance(s, dict):
+            e.append(f"规则8: tests.scenarios[{i}] 必须是映射，实为 {type(s).__name__}")
+            continue
         slug = str(s.get("slug", ""))
+        slugs.append(slug)
         if not SLUG_RE.match(slug):
             e.append(f"规则8: slug {slug!r} 必须匹配 ^[a-z0-9][a-z0-9-]*$（禁止中文/空格）")
-        if not s.get("url", "").startswith("/"):
+        if not str(s.get("url", "")).startswith("/"):
             e.append(f"规则8: scenario {slug!r} 的 url 必须以 / 开头")
+        caption = s.get("caption")
+        if not isinstance(caption, dict):
+            e.append(f"规则8: scenario {slug!r} 缺少 caption（必须是 en/zh 映射）")
+            continue
         for loc in ("en", "zh"):
-            if not (s.get("caption") or {}).get(loc):
+            if not caption.get(loc):
                 e.append(f"规则8: scenario {slug!r} 缺少 caption.{loc}")
+    if len(slugs) != len(set(slugs)):
+        e.append("规则8: tests.scenarios[].slug 重复")
     order = g("website.screenshots_order") or []
-    if spec.scenarios and sorted(order) != sorted(slugs):
+    if slugs and sorted(order) != sorted(slugs):
         e.append(f"规则8: website.screenshots_order={order} 与 scenarios slug={slugs} 不一致")
 
     # 10 / 11 尺寸阶梯
@@ -213,7 +236,7 @@ def validate(spec: AppSpec, root: Path, platform_region: str) -> list[str]:
         eff_size = min_size = None
     if eff_size not in profiles.SIZE_ORDER:
         e.append(f"规则10: deployment.size={g('deployment.size')!r} 不在 small/medium/large/xlarge 内")
-    elif eff_size not in profiles.LADDER[spec.app_type]:
+    elif eff_size not in profiles.LADDER.get(spec.app_type, {}):
         e.append(f"规则10: {spec.app_type} 无 {eff_size} 档（地板 {min_size}）")
     elif profiles.rank(eff_size) < profiles.rank(min_size):
         e.append(f"规则10: size={eff_size} 低于 {spec.app_type} 的 min_size={min_size}")
@@ -221,34 +244,43 @@ def validate(spec: AppSpec, root: Path, platform_region: str) -> list[str]:
         spec.resources()
     except ValueError as exc:
         e.append(str(exc))
+    except KeyError:
+        pass  # 未知 app_type 已由规则9 报出，这里不重复崩溃
 
     # 12 version_assertion
     va = g("health_check.version_assertion")
     if va:
-        kind = va.get("kind")
-        if kind not in profiles.ASSERTION_KINDS:
-            e.append(f"规则12: version_assertion.kind={kind!r} 不在枚举 {profiles.ASSERTION_KINDS}")
+        if not isinstance(va, dict):
+            e.append(f"规则12: version_assertion 必须是映射，实为 {type(va).__name__}")
         else:
-            required = {
-                "env": ["name"], "label": ["name"], "header": ["name"],
-                "api_json_path": ["path", "json_pointer"], "exec_command": ["command"],
-            }[kind]
-            for r in required:
-                if not va.get(r):
-                    e.append(f"规则12: version_assertion.kind={kind} 缺字段 {r}")
-        expected = str(va.get("expected", ""))
-        if not expected:
-            e.append("规则12: version_assertion.expected 必填")
-        for var in TEMPLATE_VAR_RE.findall(expected):
-            if var not in ("version", "version_no_v"):
-                e.append(f"规则12: version_assertion.expected 含非法占位符 {{{var}}}")
-        if va.get("match", "exact") not in ("exact", "prefix"):
-            e.append("规则12: version_assertion.match 必须为 exact|prefix")
+            kind = va.get("kind")
+            if kind not in profiles.ASSERTION_KINDS:
+                e.append(f"规则12: version_assertion.kind={kind!r} 不在枚举 {profiles.ASSERTION_KINDS}")
+            else:
+                required = {
+                    "env": ["name"], "label": ["name"], "header": ["name"],
+                    "api_json_path": ["path", "json_pointer"], "exec_command": ["command"],
+                }[kind]
+                for r in required:
+                    if not va.get(r):
+                        e.append(f"规则12: version_assertion.kind={kind} 缺字段 {r}")
+            expected = str(va.get("expected", ""))
+            if not expected:
+                e.append("规则12: version_assertion.expected 必填")
+            for var in TEMPLATE_VAR_RE.findall(expected):
+                if var not in ("version", "version_no_v"):
+                    e.append(f"规则12: version_assertion.expected 含非法占位符 {{{var}}}")
+            if va.get("match", "exact") not in ("exact", "prefix"):
+                e.append("规则12: version_assertion.match 必须为 exact|prefix")
 
     # 13 features 双语
-    for i, f in enumerate(g("website.features") or []):
-        if not (f.get("en") and f.get("zh")):
-            e.append(f"规则13: website.features[{i}] 必须同时含 en 与 zh")
+    features = g("website.features") or []
+    if not isinstance(features, list):
+        e.append(f"规则13: website.features 必须是列表，实为 {type(features).__name__}")
+    else:
+        for i, f in enumerate(features):
+            if not isinstance(f, dict) or not (f.get("en") and f.get("zh")):
+                e.append(f"规则13: website.features[{i}] 必须同时含 en 与 zh")
 
     # 15 release_type_override 需 reason
     rto = g("release_type_override")
@@ -259,12 +291,43 @@ def validate(spec: AppSpec, root: Path, platform_region: str) -> list[str]:
             e.append("规则15: release_type_override 非空必须带 `# reason:` 注释")
 
     # 16 extra_environment：KEY=VALUE 形式、禁止敏感词（密钥走 SSM/Secrets）
-    for i, item in enumerate(g("deploy.extra_environment") or []):
-        s = str(item)
-        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.+$", s):
-            e.append(f"规则16: extra_environment[{i}] 必须为 KEY=VALUE 形式：{s!r}")
-        elif re.search(r"secret|password|token|private_key", s, re.I):
-            e.append(f"规则16: extra_environment[{i}] 含敏感词，敏感值走 SSM/Secrets，不进 app schema")
+    extra_env = g("deploy.extra_environment") or []
+    if not isinstance(extra_env, list):
+        e.append(f"规则16: deploy.extra_environment 必须是列表，实为 {type(extra_env).__name__}")
+    else:
+        for i, item in enumerate(extra_env):
+            s = str(item)
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.+$", s):
+                e.append(f"规则16: extra_environment[{i}] 必须为 KEY=VALUE 形式：{s!r}")
+            elif re.search(r"secret|password|token|private_key", s, re.I):
+                e.append(f"规则16: extra_environment[{i}] 含敏感词，敏感值走 SSM/Secrets，不进 app schema")
+
+    # 17 post_deploy：部署后指引（网站详情页渲染）。只写"去哪/怎么获取"，凭据不进契约
+    pd = g("deployment.post_deploy")
+    if pd is not None:
+        if not isinstance(pd, dict):
+            e.append(f"规则17: deployment.post_deploy 必须是映射，实为 {type(pd).__name__}")
+        else:
+            admin_path = pd.get("admin_path")
+            if admin_path is not None and (not isinstance(admin_path, str) or not admin_path.startswith("/")):
+                e.append(f"规则17: post_deploy.admin_path 必须是以 / 开头的路径，实为 {admin_path!r}")
+            setup = pd.get("admin_setup")
+            if admin_path is not None and (not isinstance(setup, dict) or not setup.get("en") or not setup.get("zh")):
+                e.append("规则17: post_deploy.admin_path 存在时，admin_setup.{en,zh} 必须均非空（有后台入口就必须说明怎么进去）")
+            texts: list[str] = []
+            if isinstance(setup, dict):
+                texts += [str(setup.get("en") or ""), str(setup.get("zh") or "")]
+            notes = pd.get("notes") or []
+            if not isinstance(notes, list):
+                e.append(f"规则17: post_deploy.notes 必须是列表，实为 {type(notes).__name__}")
+                notes = []
+            for i, note in enumerate(notes):
+                if not isinstance(note, dict) or not note.get("en") or not note.get("zh"):
+                    e.append(f"规则17: post_deploy.notes[{i}] 必须 en/zh 均非空")
+                    continue
+                texts += [str(note["en"]), str(note["zh"])]
+            if any(re.search(r"secret|password|token|private_key", s, re.I) for s in texts):
+                e.append("规则17: post_deploy 文案含敏感词——凭据不进契约，只允许写'去哪获取'")
 
     # tests 目录
     tdir = g("tests.predefined_dir")
@@ -335,6 +398,9 @@ def _validate_tag_template(spec: AppSpec) -> list[str]:
 
 def render_image_ref(spec: AppSpec, app_version: str) -> str:
     """Render `deploy.image_tag_template` for a concrete app_version -> full image ref."""
-    return spec.g("deploy.image_tag_template").format(
+    tpl = spec.g("deploy.image_tag_template")
+    if not tpl:
+        raise ValueError("deploy.image_tag_template 未配置，无法渲染镜像引用")
+    return tpl.format(
         version=app_version, version_no_v=strip_v(app_version)
     )

@@ -100,8 +100,9 @@ def up_to_date_within_window(release: dict[str, Any], hours: int) -> bool:
             ts = time.strptime(published_at, fmt)
         except ValueError:
             continue
-        # GitHub 的 published_at 是 UTC，必须用 timegm：time.mktime 会按本地时区偏移
-        return (calendar.timegm(ts) - time.time()) > hours * 3600
+        # GitHub 的 published_at 是 UTC，必须用 timegm：time.mktime 会按本地时区偏移。
+        # 语义：最近一次 release 距今已超过窗口 → 窗口内没有新东西 → 可以跳过。
+        return (time.time() - calendar.timegm(ts)) > hours * 3600
     return False
 
 

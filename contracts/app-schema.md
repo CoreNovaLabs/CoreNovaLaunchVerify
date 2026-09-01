@@ -104,6 +104,14 @@ deployment:                           # required, 网站展示用的静态部署
   launch_url_template: "https://{app}.{region}.corenovalaunch.app"  # optional, string
   documentation_url: "https://docs.ghost.org"  # optional, string
   regions: ["us-east-1"]              # required, string[]，支持部署的区域列表
+  post_deploy:                        # optional, 部署后指引（网站详情页「部署速览/部署后指引」区块的唯一事实源）
+    admin_path: "/ghost/"             # optional, string；后台入口路径，必须以 / 开头；无后台概念的应用不写
+    admin_setup:                      # admin_path 存在时必填；如何获得后台权限的**静态指引**（双语）
+      en: "First visit opens the setup wizard to create the owner account."
+      zh: "首次访问会进入初始化向导，按步骤创建管理员账户。"
+    notes:                            # optional, Localized[]；部署后注意事项（双语）
+      - en: "Data lives on the instance's EBS volume; back it up before terminating."
+        zh: "数据保存在实例的 EBS 卷上，终止实例前请先备份。"
 
 release_type_override: null           # optional, enum(initial|new_version|security_update|bug_fix)
                                       # 仅在上游 release notes 无法被 deployment-contract.md §4.1 规则可靠判定时人工覆盖；非空必须带 `# reason:` 注释
@@ -155,6 +163,9 @@ website:                              # required
 | `tests.scenarios[].caption.{en,zh}` | 条件必填 | string | — | 写了 scenario 就必须双语齐全 |
 | `deployment.regions` | ✅ | string[] | — | 非空；v1 必须等于 `[<Platform Contract.region>]` |
 | `deployment.documentation_url` | ❌ | string | — | URL |
+| `deployment.post_deploy.admin_path` | ❌ | string | `null` | 以 `/` 开头的后台入口路径；无后台概念的应用不写 |
+| `deployment.post_deploy.admin_setup` | 条件必填 | Localized | — | `admin_path` 存在时 `en`/`zh` 均非空；只写"如何获取权限"，**禁止出现任何凭据**（规则16 红线同理） |
+| `deployment.post_deploy.notes[]` | ❌ | Localized[] | `[]` | 每项 `en` 与 `zh` 都必须非空 |
 | `release_type_override` | ❌ | enum | `null` | 非空时必须带 `# reason:`（deployment-contract.md §4.1） |
 | `website.featured` | ✅ | bool | — | — |
 | `website.tags` | ✅ | string[] | — | 非空 |
@@ -254,6 +265,7 @@ health_check:
 14. v1 单区域约束：`deployment.regions` 必须恰好等于 `[<所引用 Platform Contract.region>]`；写多区域即校验失败（防止前端显示"已支持"而平台契约不存在，见 platform-contract.md §7）。
 15. `release_type_override` 非空时，同一逻辑行或其紧邻上一行必须含 `# reason:` 注释，且值 ∈ 四枚举（deployment-contract.md §4.1）。
 16. `deploy.extra_environment` 每项必须匹配 `^[A-Za-z_][A-Za-z0-9_]*=.+$`（KEY=VALUE）；KEY 或 VALUE 含 `secret`/`password`/`token`/`private_key`（不区分大小写）即校验失败——敏感值走 SSM Parameter Store / Secrets，不进 app schema（§7 单容器边界同理）。
+17. `deployment.post_deploy` 若存在：必须是映射；`admin_path` 若存在必须以 `/` 开头；`admin_path` 存在时 `admin_setup` 的 `en`/`zh` 均必须非空（有后台入口就必须说明怎么进去）；`notes[]` 每项 `en`/`zh` 均非空；所有文案含 `secret`/`password`/`token`/`private_key`（不区分大小写）即校验失败——凭据不进契约，只允许写"去哪获取"。
 
 ## 6. 反模式
 
@@ -265,6 +277,7 @@ health_check:
 - ❌ 把 `features` / `docker_image` 等前端展示字段直接写进 Repo A 的 mock 而不进 app schema → Manifest 投影链（会造成第二事实源）。
 - ❌ `deployment.regions` 写多个区域而平台契约仅覆盖 `us-east-1`（规则 14；网站会把"规划中"显示成"已支持"）。
 - ❌ 把 digest 静态写死在 app schema（digest 是运行时解析结果，归 Verification Manifest）。
+- ❌ 在 `deployment.post_deploy` 文案里写初始密码/账号（凭据面进契约即泄漏面；只写"去哪获取"，规则 17）。
 - ❌ 把 `ami_id` / `region` 写进 app schema（那是平台层契约，归 Platform Contract）。
 
 ## 7. 部署模型边界：当前为单容器（2026-08-30 明确）

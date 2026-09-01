@@ -72,18 +72,27 @@ def classify(stage: str, check: str = "", err: BaseException | None = None) -> s
         return "TRANSIENT"
     if stage in ("DEPLOYING", "DEPLOYED") or check in ("cfn", "ami", "cfn_init", "nginx_platform"):
         return "INFRASTRUCTURE"
-    if stage == "RESOLVED":
-        return "TRANSIENT" if err is not None else "APPLICATION"
-    if stage == "PUBLISHING":
-        return "TRANSIENT"
+    # Deterministic checks route by their own nature BEFORE any stage default:
+    # an invalid platform contract sends the platform side back to golden-verify
+    # (not a FIX_PR against apps/), and a schema violation is an app-registry fix —
+    # neither is cured by retrying.
+    if check == "required_platform_contract_valid":
+        return "INFRASTRUCTURE"
+    if check == "app_schema":
+        return "APPLICATION"
     if check == "tests_passed":
         return "TEST"
     if check in ("compose_started", "container_healthy", "health_check_passed"):
         return "APPLICATION"
-    if check == "required_platform_contract_valid":
-        return "INFRASTRUCTURE"
     if check == "screenshots_generated":
         return "TEST"
+    if stage == "RESOLVED":
+        # Transitional errors already returned TRANSIENT above; what reaches here is
+        # a deterministic resolution failure (missing registry file, unknown tag,
+        # malformed YAML) — surface it for a human instead of auto-retrying.
+        return "MANUAL_REQUIRED" if err is not None else "APPLICATION"
+    if stage == "PUBLISHING":
+        return "TRANSIENT"
     return "MANUAL_REQUIRED"
 
 

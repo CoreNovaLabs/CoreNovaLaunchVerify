@@ -70,7 +70,13 @@ def sample_manifest(**over) -> dict:
             "deploy": {"docker_image": "ghost:6.61.0-alpine", "regions": ["us-east-1"],
                        "instance_type": "t3.small", "container_port": 2368,
                        "launch_url": "https://ghost.us-east-1.corenovalaunch.app",
-                       "documentation_url": "https://ghost.org/docs/"},
+                       "documentation_url": "https://ghost.org/docs/",
+                       "post_deploy": {
+                           "admin_path": "/ghost/",
+                           "admin_setup": {"en": "Setup wizard on first visit.",
+                                           "zh": "首次访问进入初始化向导。"},
+                           "notes": [{"en": "Back up the data volume.", "zh": "备份数据卷。"}],
+                       }},
             "release": {"type": "initial", "previous_version": "", "type_evidence": "rule1"},
         },
     }
@@ -181,17 +187,14 @@ def test_old_version_cannot_overwrite_current(tmp_path, shots):
 
 
 def test_non_semver_falls_back_to_run_id(tmp_path):
-    cfg = DirBackend(tmp_path)
-    from corenova.backend import DirBackend as DB
-
-    db = DB(tmp_path)
-    db.put("verified/ghost/current.json",
-           json.dumps({"app_version": "main", "verification_run_id": "500"}).encode())
-    ok, why = publish.may_update_current(cfg, "ghost", "main", "400", "git_branch")
+    backend = DirBackend(tmp_path)
+    backend.put("verified/ghost/current.json",
+                json.dumps({"app_version": "main", "verification_run_id": "500"}).encode())
+    ok, why = publish.may_update_current(backend, "ghost", "main", "400", "git_branch")
     assert not ok and "不新于" in why
-    ok2, _ = publish.may_update_current(cfg, "ghost", "main", "600", "git_branch")
+    ok2, _ = publish.may_update_current(backend, "ghost", "main", "600", "git_branch")
     assert ok2
-    ok3, _ = publish.may_update_current(cfg, "ghost", "main", "600", "git_branch", force=True)
+    ok3, _ = publish.may_update_current(backend, "ghost", "main", "600", "git_branch", force=True)
     assert ok3
 
 
@@ -219,7 +222,55 @@ def test_screenshot_order_must_match():
         mf.assert_projection(m)
 
 
-def test_config_defaults_present():
+# ------------------------------------------------------------------ 部署后指引投影（app-schema 规则17）
+
+
+def _build_inputs(tmp_path):
+    from corenova.manifest import VerifyOutcome
+    from corenova.resolver import ResolvedImage, ResolvedVersion
+    from tests.test_schema_rules import make as make_spec
+
+    resolved = ResolvedVersion(
+        app_version="v6.61.0", release_tag="v6.61.0", source_revision="abc123",
+        release_type="initial", type_evidence="rule1", release_body="", published_at="",
+    )
+    image = ResolvedImage(
+        image_ref="ghost:6.61.0-alpine", pull_ref="ghost:6.61.0-alpine@sha256:aaa",
+        digest="sha256:aaa", manifest_digest="sha256:bbb",
+        repo="ghost", tag="6.61.0-alpine", host="docker.io", upstream_host="docker.io",
+    )
+    platform = {"platform_verification_id": "plat-x", "ami_id": "ami-0abc",
+                "architecture": "x86_64", "region": "us-east-1"}
+    outcome = VerifyOutcome(
+        checks={c: True for c in mf.CHECKS},
+        verification={"application": "passed", "platform": "referenced", "tests": "passed"},
+        screenshots=[
+            {"slug": "home", "file": "home.png", "caption": {"en": "Home", "zh": "首页"}},
+            {"slug": "admin", "file": "admin.png", "caption": {"en": "Admin", "zh": "后台"}},
+        ],
+    )
+    return make_spec, resolved, image, platform, outcome
+
+
+def test_deploy_guide_projected_when_registered(tmp_path):
+    make_spec, resolved, image, platform, outcome = _build_inputs(tmp_path)
+    spec = make_spec(tmp_path)
+    m = mf.build(spec, tmp_path, resolved, image, platform, outcome, Cfg(), "local-1")
+    assert m["website"]["deploy"]["post_deploy"] == spec.g("deployment.post_deploy")
+
+
+def test_deploy_guide_key_absent_when_not_registered(tmp_path):
+    make_spec, resolved, image, platform, outcome = _build_inputs(tmp_path)
+    spec = make_spec(tmp_path, lambda d: d["deployment"].__delitem__("post_deploy"))
+    m = mf.build(spec, tmp_path, resolved, image, platform, outcome, Cfg(), "local-2")
+    assert "post_deploy" not in m["website"]["deploy"]
+
+
+def test_config_defaults_present(monkeypatch):
+    # Config.region/base_ami_source 优先读环境变量；不清掉的话，本机/CI 上
+    # 带 AWS_REGION 的开发环境会把断言带偏（测的是仓库默认值，不是环境覆盖）
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.delenv("BASE_AMI_SOURCE", raising=False)
     cfg = Config.load()
     assert cfg.region == "us-east-1" and cfg.architecture == "x86_64"
     assert cfg.base_ami_source == "public"

@@ -115,9 +115,15 @@ def assert_whitelisted(app: str, path: str) -> None:
 
 
 def _normalize(path: str) -> str:
-    p = str(path).strip().lstrip("./")
+    # lstrip("./") 按字符集剥离，"../apps/..." 会被剥成合法路径绕过白名单；
+    # 必须按前缀剥，并显式拒绝任何含 .. 段的路径。
+    p = str(path).strip()
+    while p.startswith("./"):
+        p = p[2:]
     while p.startswith("/"):
         p = p[1:]
+    if ".." in p.split("/"):
+        raise PathNotAllowed(f"{path!r} 含 .. 路径段，拒绝处理")
     return p
 
 

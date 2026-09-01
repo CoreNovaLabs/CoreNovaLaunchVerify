@@ -161,8 +161,10 @@ def strip_v(version: str) -> str:
 
 
 def sanitize_for_id(value: str) -> str:
-    """verification_id 拼接用：非 [a-z0-9._-] 一律替换为 _（契约 §2 解析约束）。"""
-    return re.sub(r"[A-Z]", lambda m: m.group(0).lower(), value)
+    """对象键/verification_id 拼接用：先转小写，非 [a-z0-9._-] 一律替换为 _
+    （契约 §2 解析约束）。上游 release tag 允许 `/`、大写等字符，进键前必须清洗，
+    否则 dir 后端存在路径穿越面。"""
+    return re.sub(r"[^a-z0-9._-]", "_", str(value).lower())
 
 
 def is_transitional_error(err: BaseException) -> bool:

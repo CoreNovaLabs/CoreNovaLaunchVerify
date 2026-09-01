@@ -80,9 +80,13 @@ def compute_revisions(cfg, base_ami_id: str = "") -> dict[str, str]:
 
 
 def _age_days(iso: str) -> float:
+    import calendar
+
     try:
+        # platform_verified_at 是 UTC（%...Z）；time.mktime 会按本地时区解释它，
+        # 非 UTC 机器上契约年龄会偏一个时区偏移，必须用 timegm（与 golden._age_days 同口径）。
         t = time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
-        return (time.time() - time.mktime(t)) / 86400.0
+        return max(0.0, (time.time() - calendar.timegm(t)) / 86400.0)
     except (ValueError, TypeError):
         return 1e9
 

@@ -37,7 +37,12 @@ class DirBackend:
         self.root = Path(root)
 
     def _p(self, key: str) -> Path:
-        return self.root / key
+        # 纵深防御：键片段在调用侧已清洗（sanitize_for_id），这里再断言解析后的
+        # 路径仍在根目录内，挡住任何 `../` 之类的穿越键。
+        p = (self.root / key).resolve()
+        if not p.is_relative_to(self.root.resolve()):
+            raise ValueError(f"对象键越出后端根目录：{key!r}")
+        return p
 
     def get(self, key: str) -> bytes | None:
         p = self._p(key)

@@ -1,5 +1,5 @@
 # CoreNova Launch · 应用注册（App Schema 唯一事实源）
-# 契约：contracts/app-schema.md（校验规则见 §5，共 15 条）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 17 条）
 #
 # 关于 app_type 的选择说明（与 app-profiles.md §1 示例表的差异是有意为之）：
 # 示例表把 Ghost 归为 stateless_web（"状态在外部 DB"）。但 Ghost 官方镜像开箱即用形态是
@@ -75,6 +75,16 @@ deployment:
   size: "small"
   documentation_url: "https://ghost.org/docs/"
   regions: ["us-east-1"]
+  # 部署后指引（app-schema.md §5 规则17）：只写"去哪/怎么获取"，凭据不进契约。
+  # Ghost 无预置账号：首访 /ghost/ 进入设置向导创建站长账户（由上游产品行为决定）。
+  post_deploy:
+    admin_path: "/ghost/"
+    admin_setup:
+      en: "Open the admin path on first visit — the setup wizard walks you through creating the owner account. There are no preset credentials."
+      zh: "首次打开后台地址会进入初始化向导，按步骤创建站长账户；没有预置账号密码。"
+    notes:
+      - en: "Content is stored on the instance's data volume (/var/lib/ghost/content); back it up before terminating the instance."
+        zh: "内容保存在实例数据卷（/var/lib/ghost/content），终止实例前请先备份。"
 
 website:
   featured: true

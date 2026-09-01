@@ -157,7 +157,18 @@
       "regions": ["us-east-1"],
       "instance_type": "t3.small",
       "container_port": 2368,
-      "docker_image": "ghost:5.75.0-alpine"
+      "docker_image": "ghost:5.75.0-alpine",
+      "post_deploy": {
+        "admin_path": "/ghost/",
+        "admin_setup": {
+          "en": "Open the admin path on first visit — the setup wizard walks you through creating the owner account. There are no preset credentials.",
+          "zh": "首次打开后台地址会进入初始化向导，按步骤创建站长账户；没有预置账号密码。"
+        },
+        "notes": [
+          { "en": "Content is stored on the instance's data volume (/var/lib/ghost/content); back it up before terminating the instance.",
+            "zh": "内容保存在实例数据卷（/var/lib/ghost/content），终止实例前请先备份。" }
+        ]
+      }
     },
     "release": {
       "type": "new_version",

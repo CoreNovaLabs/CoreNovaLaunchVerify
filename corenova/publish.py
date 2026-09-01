@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from .manifest import CHECKS, report_url, screenshot_key
-from .util import log, parse_semver, utcnow
+from .util import log, parse_semver, sanitize_for_id, utcnow
 
 UPLOAD_CHECKS = ("screenshots_uploaded", "report_uploaded", "verification_manifest_uploaded")
 LOCAL_CHECKS = tuple(c for c in CHECKS if c not in UPLOAD_CHECKS)
@@ -81,6 +81,7 @@ class PublishResult:
     verification_id: str = ""
     committed_ready: bool = False
     current_written: bool = False
+    committed: bool = False
     notes: list[str] = field(default_factory=list)
 
 
@@ -105,7 +106,8 @@ def publish(
     app = manifest["app"]
     app_version = manifest["app_version"]
     strategy = str(manifest.get("_strategy") or "release_tag")
-    ver_key = f"verified/{app}/versions/{app_version}.json"
+    # 键片段清洗：app_version 来自上游 tag（可能含 `/`、大写），不得原样进对象键。
+    ver_key = f"verified/{sanitize_for_id(app)}/versions/{sanitize_for_id(app_version)}.json"
     result = PublishResult(verification_id=manifest["verification_id"])
 
     local_failed = [c for c in LOCAL_CHECKS if not manifest["checks"].get(c)]
@@ -130,8 +132,15 @@ def publish(
     # seq 只用于区分不同次验证的 verification_id（契约 §2）。
     existing = backend.get(ver_key)
     notes: list[str] = []
+    prev: dict[str, Any] | None = None
     if existing:
-        prev = json.loads(existing)
+        try:
+            prev = json.loads(existing)
+        except json.JSONDecodeError:
+            # 与 _get_current 对 current.json 的口径一致：损坏记录视为缺失，
+            # 补投/重跑不该以 traceback 收场。
+            notes.append(f"既有 {ver_key} 损坏（非 JSON）→ 按缺失处理并覆盖")
+    if prev:
         recorded = prev.get("verification_id") or ""
         if str(prev.get("verification_run_id") or "") != str(manifest.get("verification_run_id") or ""):
             _rename_id(manifest, _seq_of(recorded) + 1)
@@ -216,7 +225,12 @@ def _update_index(backend, app: str, manifest: dict[str, Any]) -> None:
     """verified/index.json — the website's only way to enumerate apps (§2.1)."""
     key = "verified/index.json"
     raw = backend.get(key)
-    index = json.loads(raw) if raw else {"schema_version": "1.0", "apps": []}
+    index: dict[str, Any] = {"schema_version": "1.0", "apps": []}
+    if raw:
+        try:
+            index = json.loads(raw)
+        except json.JSONDecodeError:
+            log(f"index.json 损坏 → 以空索引重建（{key}）")
     w = manifest["website"]
     entry = {
         "app": app,

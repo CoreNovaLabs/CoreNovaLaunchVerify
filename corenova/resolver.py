@@ -153,7 +153,8 @@ def classify_release(
     """deployment-contract.md §4.1 — first match wins, evidence recorded."""
     override = spec.g("release_type_override")
     if override:
-        assert override in RELEASE_TYPES
+        if override not in RELEASE_TYPES:
+            raise ValueError(f"release_type_override={override!r} 不在允许的类型 {RELEASE_TYPES} 中")
         return override, f"manual: release_type_override={override} ({_reason_comment(spec)})"
 
     hit = SECURITY_RE.search(body)
@@ -296,14 +297,3 @@ def _registry_token(host: str, repo: str) -> str | None:
         query["service"] = params["service"]
     resp = http_json(m.group(1) + "?" + urllib.parse.urlencode(query))
     return resp.get("token") or resp.get("access_token")
-
-
-# --------------------------------------------------------------------------- verification_id
-
-
-def make_verification_id(app: str, app_version: str, day: str, seq: int) -> str:
-    """{app}-{app_version}-{YYYYMMDD}-{seq}; opaque key, never parsed back (契约 §2)."""
-    import re as _re
-
-    cleaned = _re.sub(r"[^a-z0-9._-]", "_", app_version)
-    return f"{app}-{cleaned}-{day}-{seq:03d}"

@@ -2,7 +2,6 @@
 # Core
 PyYAML>=6.0
 requests>=2.31
-packaging>=23.0
 
 # AWS（仅 Golden Verification / Platform Contract 需要）
 boto3>=1.34

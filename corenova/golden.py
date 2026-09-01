@@ -605,7 +605,12 @@ def _ports_of(rule: dict[str, Any]) -> set[int]:
 
 
 def _network_sg_errors(cfg: Config) -> list[str]:
-    tpl = load_template(cfg, "network.yaml")
+    # 缺失/损坏已在 static_template_errors 的模板循环里记过问题，这里直接跳过，
+    # 不让 --check/--dry-run 以 traceback 收场。
+    try:
+        tpl = load_template(cfg, "network.yaml")
+    except Exception:  # noqa: BLE001
+        return []
     resources = tpl.get("Resources") or {}
     problems: list[str] = []
     sgs = {rid: spec.get("Properties", {}) for rid, spec in resources.items()
@@ -641,7 +646,11 @@ def _hardcoding_errors(cfg: Config) -> list[str]:
         text = template_path(cfg, name).read_text(encoding="utf-8")
         for match in HARDCODED_RE.finditer(text):
             problems.append(f"{name}: 含硬编码镜像/端口痕迹 {match.group(1)!r}")
-        meta = json.dumps(_init_metadata(load_template(cfg, name)), ensure_ascii=False)
+        try:
+            tpl = load_template(cfg, name)
+        except Exception:  # noqa: BLE001 - 解析失败已由模板循环报告
+            continue
+        meta = json.dumps(_init_metadata(tpl), ensure_ascii=False)
         for token in ("CFNOVA_CONTAINER_PORT", "CFNOVA_IMAGE_REFERENCE"):
             if token not in meta:
                 problems.append(f"{name}: cfn-init 资产未通过 init.env 注入 {token}")
@@ -1263,12 +1272,15 @@ def _probe_network(ctx: ProbeCtx) -> tuple[bool, str]:
 def _probe_ec2_launched(ctx: ProbeCtx) -> tuple[bool, str]:
     if not ctx.canary.instance_id:
         return False, "栈输出里没有 InstanceId"
-    res = ctx.aws.ec2.describe_instances(InstanceIds=[ctx.canary.instance_id])["Reservations"][0]["Instances"][0]
-    state = (res.get("State") or {}).get("Name", "")
     # 两项状态检查在实例 running 后还会 "initializing" 1–2 分钟才转 ok，短轮询等它收敛，
     # 否则刚启动就探会误判（state=running system-status=initializing）。
-    sys_check = "pending"
+    # state 必须在循环内重读：CFN CREATE_COMPLETE 时 EC2 可能还是 pending，
+    # 只在循环前读一次会把"10 秒后转 running"的实例误判为失败。
+    state, sys_check = "unknown", "pending"
     for _ in range(10):
+        res = ctx.aws.ec2.describe_instances(InstanceIds=[ctx.canary.instance_id])[
+            "Reservations"][0]["Instances"][0]
+        state = (res.get("State") or {}).get("Name", "")
         statuses = ctx.aws.ec2.describe_instance_status(
             InstanceIds=[ctx.canary.instance_id], IncludeAllInstances=True
         ).get("InstanceStatuses", [])

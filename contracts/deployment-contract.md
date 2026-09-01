@@ -26,6 +26,7 @@ R2 = Website Runtime Source of Truth
   "app": "ghost",
   "app_version": "v5.75.0",
   "verification_id": "ghost-v5.75.0-20260827-001",
+  "verification_run_id": "123456",
   "platform_verification_id": "plat-us-east-1-x86_64-20260827-001",
   "ami_id": "ami-0abc123def4567890",
   "architecture": "x86_64",
@@ -54,7 +55,12 @@ R2 = Website Runtime Source of Truth
     "regions": ["us-east-1"],
     "instance_type": "t3.small",
     "container_port": 2368,
-    "docker_image": "ghost:5.75.0-alpine"
+    "docker_image": "ghost:5.75.0-alpine",
+    "post_deploy": {
+      "admin_path": "/ghost/",
+      "admin_setup": { "en": "…setup wizard…", "zh": "…初始化向导…" },
+      "notes": [ { "en": "…", "zh": "…" } ]
+    }
   },
 
   "release": {
@@ -180,6 +186,7 @@ Manifest: https://pub-xxxx.r2.dev/screenshots/ghost/v5.75.0/home.png
 | 更新类型判定依据（tooltip/审计） | `release.type_evidence` | ❌ 必须来自 Manifest |
 | 验证运行链接 | `workflow_run_url` | ❌ 必须来自 Manifest |
 | 截图 | `screenshots[].url` + `screenshots_order` | ❌ URL 与顺序均来自 Manifest，前端不得自行拼接对象路径 |
+| 部署后指引（后台入口/首次登录方式/注意事项） | `deploy.post_deploy`（源 = app schema `deployment.post_deploy`，app-schema.md 规则17） | ❌ 必须来自 Manifest；无该键的应用前端只渲染平台通用步骤，不得自造后台路径或凭据提示 |
 
 ## 4. `release.type` 枚举与数据化
 

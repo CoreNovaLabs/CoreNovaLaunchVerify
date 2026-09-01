@@ -41,13 +41,15 @@ def main() -> int:
             failed = True
             continue
         errors = appspec.validate(spec, cfg.root, cfg.region)
-        instance, disk = spec.resources()
         if errors:
             failed = True
             print(f"FAIL {name}（{len(errors)} 处违反契约）")
             for e in errors:
                 print(f"  - {e}")
         else:
+            # resources() 依赖合法 app_type/size，必须在通过校验后才调用，
+            # 否则畸形 schema 会在这里抛 KeyError/ValueError 而不是打印违规清单
+            instance, disk = spec.resources()
             print(
                 f"OK   {name}: app_type={spec.app_type} size={spec.size()[0]} "
                 f"-> {instance}/{disk}GB, port={spec.container_port}, "

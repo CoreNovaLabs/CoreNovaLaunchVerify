@@ -184,7 +184,14 @@ class Assertion:
     detail: str
 
 
-def assert_version(cid: str, spec: AppSpec, app_version: str) -> Assertion:
+def assert_version(
+    cid: str,
+    spec: AppSpec,
+    app_version: str,
+    *,
+    base_url: str = "",
+    probe_headers: dict[str, str] | None = None,
+) -> Assertion:
     va = spec.g("health_check.version_assertion")
     if not va:
         return Assertion(False, True, "not_configured", "", "上游无版本可观测性：仅由精确 tag 证明版本")
@@ -210,10 +217,20 @@ def assert_version(cid: str, spec: AppSpec, app_version: str) -> Assertion:
             )
             actual = proc.stdout.strip()
         elif kind == "header":
-            with urllib.request.urlopen(va["url"], timeout=20) as resp:  # noqa: S310
-                actual = resp.headers.get(va["name"], "")
+            # app-schema §3.2：取"健康探测响应"的 HTTP 头 —— 复用就绪探测已拿到的
+            # 响应头（wait_ready 的 Probe.headers，键已小写），不再另发请求。
+            if probe_headers is None:
+                return Assertion(True, False, "", expected,
+                                 "kind=header 需要就绪探测的响应头，但调用方未提供（探测未执行或无响应）")
+            actual = probe_headers.get(str(va["name"]).lower(), "")
         elif kind == "api_json_path":
-            with urllib.request.urlopen(va["url"], timeout=20) as resp:  # noqa: S310
+            # app-schema §3.2：GET {baseURL}{path} —— 字段是 path（与校验器规则12同源），
+            # 不存在独立的 url 字段。
+            if not base_url:
+                return Assertion(True, False, "", expected,
+                                 "kind=api_json_path 需要 base_url，但调用方未提供")
+            url = base_url.rstrip("/") + str(va["path"])
+            with urllib.request.urlopen(url, timeout=20) as resp:  # noqa: S310 - probe-host base
                 import json as _json
 
                 doc = _json.loads(resp.read())

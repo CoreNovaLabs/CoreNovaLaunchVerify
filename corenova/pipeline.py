@@ -224,8 +224,10 @@ def _verify(
     checks["health_check_passed"] = probe.ok
     log(f"就绪探测：{'ok' if probe.ok else 'failed'} status={probe.status} attempts={probe.attempts}")
 
-    assertion = runtime.assert_version(cid, spec, resolved.app_version) if cid else runtime.Assertion(
-        False, False, "", "", "容器不存在，无法断言版本")
+    assertion = runtime.assert_version(
+        cid, spec, resolved.app_version,
+        base_url=env.base_url, probe_headers=probe.headers,
+    ) if cid else runtime.Assertion(False, False, "", "", "容器不存在，无法断言版本")
     outcome.assertion_ok = assertion.ok
     outcome.assertion_actual, outcome.assertion_detail = assertion.actual, assertion.detail
     if assertion.configured and not assertion.ok:

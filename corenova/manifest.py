@@ -13,7 +13,7 @@ from typing import Any
 
 from .appspec import AppSpec
 from .resolver import ResolvedImage, ResolvedVersion
-from .util import file_sha, git_revision, utcnow
+from .util import file_sha, git_revision, sanitize_for_id, utcnow
 
 IDENTITY_IN_WEBSITE = (
     "app",
@@ -61,8 +61,8 @@ class VerifyOutcome:
 
 def verification_id(app: str, app_version: str, seq: int = 1, when: str | None = None) -> str:
     day = (when or utcnow())[:10].replace("-", "")
-    cleaned = "".join(c if c.isalnum() or c in "._-" else "_" for c in app_version)
-    return f"{app}-{cleaned}-{day}-{seq:03d}"
+    # 契约 §2：vid 只含 [a-z0-9._-]。isalnum() 会放行大写与 Unicode 字母，必须用统一清洗。
+    return f"{app}-{sanitize_for_id(app_version)}-{day}-{seq:03d}"
 
 
 def build(
@@ -137,6 +137,11 @@ def build(
         },
         "screenshots": shots,
     }
+
+    # 部署后指引（app-schema.md 规则17）：应用注册了才投影；无后台/旧记录省略键，前端按可选渲染
+    post_deploy = spec.g("deployment.post_deploy")
+    if isinstance(post_deploy, dict) and post_deploy:
+        website["deploy"]["post_deploy"] = post_deploy
 
     manifest: dict[str, Any] = {
         "schema_version": "1.0",
@@ -241,8 +246,9 @@ def assert_projection(manifest: dict[str, Any]) -> None:
 
 
 def screenshot_key(app: str, app_version: str, filename: str) -> str:
-    """版本隔离的对象键（repo-structure.md §4.2）：同名场景跨版本不串图。"""
-    return f"screenshots/{app}/{app_version}/{filename}"
+    """版本隔离的对象键（repo-structure.md §4.2）：同名场景跨版本不串图。
+    每个片段都经统一清洗：app_version 来自上游 tag，不得原样进键。"""
+    return f"screenshots/{sanitize_for_id(app)}/{sanitize_for_id(app_version)}/{sanitize_for_id(filename)}"
 
 
 def screenshot_url(cfg, app: str, app_version: str, filename: str) -> str:

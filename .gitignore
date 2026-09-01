@@ -16,3 +16,7 @@ ruff.toml.local
 # 本地凭据
 .env
 *.local
+
+# 本地工具产物（wrangler / npm 偶尔在仓库根目录生成）
+.wrangler/
+node_modules/

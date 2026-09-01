@@ -47,7 +47,18 @@ GOOD_SPEC: dict = {
             {"slug": "admin", "url": "/ghost/", "caption": {"en": "Admin", "zh": "后台"}},
         ],
     },
-    "deployment": {"size": "small", "regions": ["us-east-1"]},
+    "deployment": {
+        "size": "small",
+        "regions": ["us-east-1"],
+        "post_deploy": {
+            "admin_path": "/ghost/",
+            "admin_setup": {
+                "en": "First visit opens the setup wizard; no preset credentials.",
+                "zh": "首次访问进入初始化向导；没有预置账号密码。",
+            },
+            "notes": [{"en": "Back up the data volume.", "zh": "备份数据卷。"}],
+        },
+    },
     "website": {
         "featured": True,
         "screenshots_order": ["home", "admin"],
@@ -73,7 +84,7 @@ def make(tmp_path: Path, mutate=None, compose: str = GOOD_COMPOSE) -> AppSpec:
     if mutate:
         mutate(spec_data)
     app_dir = tmp_path / "apps" / BASE_APP
-    (app_dir / "tests").mkdir(parents=True)
+    (app_dir / "tests").mkdir(parents=True, exist_ok=True)
     raw = yaml.safe_dump(spec_data, allow_unicode=True)
     path = tmp_path / "apps" / f"{BASE_APP}.yaml"
     path.write_text(raw, encoding="utf-8")
@@ -194,6 +205,50 @@ def test_rule15_override_needs_reason(tmp_path):
         d["release_type_override"] = "security_update"
 
     assert any("规则15" in e for e in errors(tmp_path, m))
+
+
+def test_rule17_admin_path_without_setup_rejected(tmp_path):
+    def m(d):
+        d["deployment"]["post_deploy"] = {"admin_path": "/ghost/"}
+
+    assert any("规则17" in e and "admin_setup" in e for e in errors(tmp_path, m))
+
+
+def test_rule17_admin_path_must_start_with_slash(tmp_path):
+    def m(d):
+        d["deployment"]["post_deploy"]["admin_path"] = "ghost/"
+
+    assert any("规则17" in e and "admin_path" in e for e in errors(tmp_path, m))
+
+
+def test_rule17_credentials_rejected_in_copy(tmp_path):
+    def m(d):
+        d["deployment"]["post_deploy"]["admin_setup"]["en"] = "Login with password admin123"
+
+    assert any("规则17" in e and "敏感词" in e for e in errors(tmp_path, m))
+
+
+def test_rule17_malformed_shapes_report_not_crash(tmp_path):
+    # 字符串 post_deploy：报违规，不抛异常
+    errs = errors(tmp_path, lambda d: d["deployment"].__setitem__("post_deploy", "/ghost/"))
+    assert any("规则17" in e and "映射" in e for e in errs), errs
+    # notes 非列表
+    def m(d):
+        d["deployment"]["post_deploy"]["notes"] = "not a list"
+
+    assert any("规则17" in e and "列表" in e for e in errors(tmp_path, m))
+    # notes 项缺语言
+    def m2(d):
+        d["deployment"]["post_deploy"]["notes"] = [{"en": "only english"}]
+
+    assert any("规则17" in e for e in errors(tmp_path, m2))
+
+
+def test_rule17_absent_is_fine(tmp_path):
+    def m(d):
+        del d["deployment"]["post_deploy"]
+
+    assert errors(tmp_path, m) == []
 
 
 def test_rule1_name_must_match_filename(tmp_path):
