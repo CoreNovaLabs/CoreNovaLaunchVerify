@@ -9,9 +9,12 @@ verified_backend: dir
 output_dir: data
 
 r2:
-  bucket: ""                          # R2_BUCKET_NAME（secret 提供优先于此）
-  public_base_url: ""                 # R2_PUBLIC_BASE_URL，如 https://pub-xxxx.r2.dev
-  endpoint: ""                        # 可选：自定义 R2 S3 endpoint
+  # bucket / public_base_url 非敏感，写死在此保证任何工作流缺 secret 也能拼对路径；
+  # 对应 secret 若提供则优先生效（见 corenova/config.py）。
+  # endpoint 必须由配置提供：工作流不注入它，R2Backend 的 CF_ACCOUNT_ID 兜底也不可用。
+  bucket: "corenova-launch"                          # R2_BUCKET_NAME（secret 提供优先于此）
+  public_base_url: "https://pub-7abe6acc470447c0a101cc20ce10ceee.r2.dev"
+  endpoint: "https://1222ec625740eaea34ae67ce8d3aeb20.r2.cloudflarestorage.com"
   # 凭据只从环境变量读：R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY
 
 # one-click 用户模板的公开分发桶（us-east-1，公开读）。
