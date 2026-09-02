@@ -8,6 +8,8 @@
 - TestAppspecMalformedShapes→ appspec.validate 对畸形形状报违规而不是崩溃（M5）
 - TestIdSanitization        → sanitize_for_id / DirBackend 的路径穿越防线（M8）
 - TestAiWhitelistNormalize  → analyze_failure._normalize 的前缀剥离（M10）
+- TestResolveFailures       → failure.resolve_failures 成功关闭台账的匹配口径（§7）
+- TestLogGoesToStderr       → util.log 走 stderr，不污染 --json 数据通道（8/30 事故）
 """
 
 from __future__ import annotations
@@ -300,3 +302,91 @@ class TestAiWhitelistNormalize:
     def test_outside_whitelist_still_rejected(self):
         with pytest.raises(af.PathNotAllowed):
             af.assert_whitelisted("ghost", "apps/other.yaml")
+
+
+# ------------------------------------------------- 台账自动关闭（state-machine §7）
+
+
+def _ledger_body(app_version: str, vid: str) -> str:
+    return (
+        "Application Verification 失败。\n\n```corenova-failure\n"
+        + json.dumps({"app": "ghost", "app_version": app_version, "verification_id": vid})
+        + "\n```\n"
+    )
+
+
+class TestResolveFailures:
+    """resolve_failures：发布成功后按 app+版本/vid 关闭台账，"unknown" 与异版本不关。"""
+
+    @pytest.fixture
+    def ledger(self, monkeypatch):
+        from corenova import failure
+
+        calls: list[tuple[str, str, dict]] = []
+
+        def fake_request(url, method="GET", headers=None, data=None):
+            calls.append((method, url, data or {}))
+
+        monkeypatch.setattr(failure, "http_request", fake_request)
+        monkeypatch.setenv("GITHUB_REPOSITORY", "CoreNovaLabs/CoreNovaLaunchVerify")
+        return failure, calls
+
+    def _items(self, failure, monkeypatch, bodies):
+        monkeypatch.setattr(
+            failure, "http_json",
+            lambda url, headers=None: {"items": [
+                {"number": i + 1, "body": b} for i, b in enumerate(bodies)
+            ]},
+        )
+
+    def test_version_match_closes_with_comment(self, ledger, monkeypatch):
+        failure, calls = ledger
+        self._items(failure, monkeypatch, [_ledger_body("v6.61.0", "ghost-v6.61.0-20260831-001")])
+        failure.resolve_failures("ghost", "v6.61.0", "ghost-v6.61.0-20260901-003")
+        assert ("POST", "https://api.github.com/repos/CoreNovaLabs/CoreNovaLaunchVerify/issues/1/comments") in [
+            (m, u) for m, u, _ in calls]
+        assert ("PATCH", "https://api.github.com/repos/CoreNovaLabs/CoreNovaLaunchVerify/issues/1") in [
+            (m, u) for m, u, _ in calls]
+
+    def test_verification_id_match_closes(self, ledger, monkeypatch):
+        failure, calls = ledger
+        self._items(failure, monkeypatch, [_ledger_body("unknown", "ghost-v6.61.0-20260901-003")])
+        failure.resolve_failures("ghost", "v6.62.0", "ghost-v6.61.0-20260901-003")
+        assert any(m == "PATCH" for m, _, _ in calls)
+
+    def test_unknown_version_not_closed(self, ledger, monkeypatch):
+        failure, calls = ledger
+        self._items(failure, monkeypatch, [_ledger_body("unknown", "pre-verification")])
+        failure.resolve_failures("ghost", "v6.61.0", "ghost-v6.61.0-20260901-003")
+        assert calls == []
+
+    def test_other_version_not_closed(self, ledger, monkeypatch):
+        failure, calls = ledger
+        self._items(failure, monkeypatch, [_ledger_body("v6.62.0", "x")])
+        failure.resolve_failures("ghost", "v6.61.0", "ghost-v6.61.0-20260901-003")
+        assert calls == []
+
+    def test_no_repo_env_is_noop(self, ledger, monkeypatch):
+        failure, calls = ledger
+        monkeypatch.delenv("GITHUB_REPOSITORY")
+        failure.resolve_failures("ghost", "v6.61.0", "vid")
+        assert calls == []
+
+    def test_meta_of_malformed_block(self):
+        from corenova.failure import _meta_of
+
+        assert _meta_of("```corenova-failure\n{not json}\n```") == {}
+        assert _meta_of("没有块的正文") == {}
+        assert _meta_of(_ledger_body("v1", "vid-1"))["app_version"] == "v1"
+
+
+class TestLogGoesToStderr:
+    """stdout 是脚本数据通道（--json）；诊断日志混入会炸 json.loads（8/30 事故）。"""
+
+    def test_log_writes_stderr_not_stdout(self, capsys):
+        from corenova.util import log
+
+        log("诊断信息")
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert "[corenova] 诊断信息" in err

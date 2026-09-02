@@ -19,7 +19,9 @@ UTC_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 def log(msg: str) -> None:
-    print(f"[corenova] {msg}", flush=True)
+    # 诊断日志走 stderr：stdout 是脚本的数据通道（--json / summary JSON），
+    # 混入 [corenova] 前缀会让 json.loads 在 char 1 处炸掉（8/30 reverify-failed 事故）
+    print(f"[corenova] {msg}", file=sys.stderr, flush=True)
 
 
 def die(msg: str, code: int = 1) -> None:

@@ -101,6 +101,13 @@ jobs:
 
       - name: Install AWS CLI v2
         run: |
+          set -euo pipefail
+          # ubuntu-latest 镜像已预装 AWS CLI v2（/usr/local/aws-cli），installer 遇到
+          # 已存在的安装会 exit 1（要求 --update）。先探测，缺了才装，免疫环境漂移。
+          if command -v aws >/dev/null 2>&1; then
+            aws --version
+            exit 0
+          fi
           curl -sS https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
           unzip -q /tmp/awscliv2.zip -d /tmp
           sudo /tmp/aws/install >/dev/null

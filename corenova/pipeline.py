@@ -20,7 +20,7 @@ from . import appspec, manifest as mf, platformref, publish, report, resolver, r
 from .appspec import AppSpec
 from .backend import make_backend
 from .config import Config
-from .failure import FailureRecord, classify, record_failure
+from .failure import FailureRecord, classify, record_failure, resolve_failures
 from .util import die, http_request, log, run as sh, utcnow
 
 _GH_HEADERS = {
@@ -187,6 +187,8 @@ def run_verification(
     summary["verification_id"] = manifest["verification_id"]
     summary["status"] = "PUBLISHED" if result.current_written else "FAILED"
     if result.current_written:
+        # state-machine §7：发布成功即关闭该版本的历史失败台账
+        resolve_failures(app, resolved.app_version, manifest["verification_id"])
         _dispatch_site(cfg, manifest)
     else:
         rec = FailureRecord(

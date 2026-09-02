@@ -159,21 +159,61 @@ def record_failure(record: FailureRecord) -> None:
         log(f"写失败台账出错（忽略）：{type(exc).__name__}: {exc}")
 
 
-def close_failure(record: FailureRecord) -> None:
+def _meta_of(body: str) -> dict[str, Any]:
+    """从台账正文解析 ```corenova-failure JSON 块；解析失败返回 {}。"""
+    m = re.search(r"```corenova-failure\s*(\{.*?\})\s*```", body, re.S)
+    if not m:
+        return {}
+    try:
+        data = json.loads(m.group(1))
+        return data if isinstance(data, dict) else {}
+    except ValueError:
+        return {}
+
+
+def resolve_failures(app: str, app_version: str, verification_id: str) -> None:
+    """发布成功后关闭对应失败台账（workflow-state-machine.md §7：成功则关闭 issue）。
+
+    跨 run 的重试会携带新的 verification_id（§2 的"沿用同一号"只在单次验证内成立），
+    纯 vid 匹配关不掉历史条目；故按 app 标签搜索，凡正文里 app_version 或
+    verification_id 与本次成功一致的条目都视为已解决。版本不同（如下一版的
+    MANUAL_REQUIRED 跟踪票）不关。永不抛出：台账不能掩盖发布结果。
+    """
     repo = repo_name()
     if not repo:
         return
-    existing = find_issue(record)
-    if not existing:
-        return
+    q = f"repo:{repo} is:issue is:open label:{LABEL} label:app:{app}"
     try:
-        http_request(
-            f"https://api.github.com/repos/{repo}/issues/{existing['number']}",
-            method="PATCH", headers=_headers(), data={"state": "closed"},
+        hits = http_json(
+            f"https://api.github.com/search/issues?q={_urlencode(q, safe='')}&per_page=50",
+            headers=_headers(),
         )
-        log(f"失败台账已关闭 #{existing['number']}")
-    except Exception as exc:  # noqa: BLE001
-        log(f"关闭台账出错（忽略）：{exc}")
+    except HttpError as exc:
+        log(f"查询可解决的失败台账出错（忽略）：{exc}")
+        return
+    for it in hits.get("items") or []:
+        meta = _meta_of(it.get("body") or "")
+        vid_match = verification_id and meta.get("verification_id") == verification_id
+        ver_match = (
+            app_version
+            and meta.get("app_version") not in ("", "unknown")
+            and meta.get("app_version") == app_version
+        )
+        if not (vid_match or ver_match):
+            continue
+        try:
+            http_request(
+                f"https://api.github.com/repos/{repo}/issues/{it['number']}/comments",
+                method="POST", headers=_headers(),
+                data={"body": f"已由成功的验证 `{verification_id}` 解决，自动关闭。"},
+            )
+            http_request(
+                f"https://api.github.com/repos/{repo}/issues/{it['number']}",
+                method="PATCH", headers=_headers(), data={"state": "closed"},
+            )
+            log(f"失败台账已关闭 #{it['number']}（{app}@{app_version} 发布成功）")
+        except Exception as exc:  # noqa: BLE001
+            log(f"关闭台账出错（忽略）：{type(exc).__name__}: {exc}")
 
 
 def _attempts_of(body: str) -> int:
