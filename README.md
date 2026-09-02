@@ -60,14 +60,18 @@ Docker/Nginx 由 cfn-init 现装；切自建/收费 AMI 只改这一个字段与
 
 ## 接入新应用
 
-1. 写 `apps/{name}.yaml`（字段与默认值见 `contracts/app-schema.md` §1/§2）。
-2. 写 `apps/{name}/docker-compose.yml`：**只允许**引用 `CORENOVA_APP_IMAGE` / `CORENOVA_HOST_PORT` /
-   `CORENOVA_CONTAINER_PORT` / `CORENOVA_APP_URL` / `CORENOVA_DATA_DIR`，不得出现镜像、端口、URL 字面量。
-3. 写 `apps/{name}/tests/`（pytest + Playwright）。断言只写**实测成立的事实**；不确定的行为宁可不测并写明原因。
-4. `deploy.image_tag_template` 必须能用版本号渲染出**精确 tag**（禁止 `:latest` / `ghost:5-alpine` 这类移动 tag），
-   并尽量配 `health_check.version_assertion` 让应用自己证明版本。
-5. `tests.scenarios[].slug` 必须是 ASCII（它就是截图的对象文件名），并与 `website.screenshots_order` 一致。
-6. 跑 `validate_app_schema.py --app {name}`，再跑第 3 步的验证命令。
+1. 生成三件套骨架（字段与默认值见 `contracts/app-schema.md` §1/§2）：
+   `.venv/bin/python scripts/dev/new_app.py --name {name} --repo owner/repo --image owner/img --port {port} --category {cat}`
+   生成器只填机器可推导字段，其余留 TODO 并打印「事实核对单」；内容型字段由校验器强制补齐。
+2. 按核对单在真容器内实测，再填 `apps/{name}.yaml` 的 TODO：健康端点、`version_assertion`、
+   数据卷、双语文案。`image_tag_template` 必须渲染出**精确 tag**（禁止 `:latest` 等移动 tag）。
+3. 填 `apps/{name}/docker-compose.yml`：image/端口/URL/数据目录一律用注入变量
+   （`CORENOVA_APP_IMAGE` / `CORENOVA_HOST_PORT` / `CORENOVA_CONTAINER_PORT` / `CORENOVA_APP_URL` /
+   `CORENOVA_DATA_DIR`），不得出现字面量。
+4. 填 `apps/{name}/tests/`（pytest + Playwright）。断言只写**实测成立的事实**；不确定的行为宁可不测并写明原因。
+   `tests.scenarios[].slug` 必须是 ASCII（截图文件名），并与 `website.screenshots_order` 一致。
+5. 跑 `validate_app_schema.py --app {name}` 到零违规，再跑 `run_application_verify.py --app {name}` 全链路。
+6. 官网图标（唯一人工静态资产）：把 `{name}.svg` 放进 Website 仓 `public/icons/`。
 
 ## CI
 
