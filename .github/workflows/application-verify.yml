@@ -188,12 +188,16 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-  # P5（写 current.json + index.json）已在 pipeline 内完成；本作业只发 repository_dispatch。
+  # P5（写 current.json + index.json）已在 pipeline 内完成；本作业只做收尾通知。
+  # app_name 传空 = 全量清单：数据标记反映生效后端的完整已发布状态。
+  # 传单应用会让批量并发时后一个应用的标记覆盖前一个的清单（标记虽是提示性质，
+  # 但 git 历史应当可读）。
   notify-site:
     name: dispatch verified-update → Repo A
     needs: verify
     if: success()
     uses: ./.github/workflows/publish-site.yml
     with:
-      app_name: ${{ inputs.app_name }}
+      app_name: ""
+      reason: "application-verify run ${{ github.run_id }}（${{ inputs.app_name }}）"
     secrets: inherit
