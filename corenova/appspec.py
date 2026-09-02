@@ -329,6 +329,24 @@ def validate(spec: AppSpec, root: Path, platform_region: str) -> list[str]:
             if any(re.search(r"secret|password|token|private_key", s, re.I) for s in texts):
                 e.append("规则17: post_deploy 文案含敏感词——凭据不进契约，只允许写'去哪获取'")
 
+    # 18 cost_estimate：月成本估算（网站部署区成本卡的事实源）。价格是注册时人工核对的
+    # 事实——前端只展示，绝不按实例档/磁盘自行计算（§6 反模式：展示数据必须有注册来源）
+    ce = g("deployment.cost_estimate")
+    if ce is not None:
+        if not isinstance(ce, dict):
+            e.append(f"规则18: deployment.cost_estimate 必须是映射，实为 {type(ce).__name__}")
+        else:
+            usd = ce.get("monthly_usd")
+            if isinstance(usd, bool) or not isinstance(usd, (int, float)) or usd <= 0:
+                e.append(f"规则18: cost_estimate.monthly_usd 必须为正数，实为 {usd!r}")
+            note = ce.get("note")
+            if note is not None:
+                if not isinstance(note, dict) or not note.get("en") or not note.get("zh"):
+                    e.append("规则18: cost_estimate.note 若存在，en/zh 必须均非空（估算口径必须双语）")
+                elif re.search(r"secret|password|token|private_key",
+                               str(note.get("en")) + str(note.get("zh")), re.I):
+                    e.append("规则18: cost_estimate.note 含敏感词——口径说明不放凭据类内容")
+
     # tests 目录
     tdir = g("tests.predefined_dir")
     if not tdir:

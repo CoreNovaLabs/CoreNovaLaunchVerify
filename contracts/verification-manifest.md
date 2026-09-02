@@ -168,6 +168,13 @@
           { "en": "Content is stored on the instance's data volume (/var/lib/ghost/content); back it up before terminating the instance.",
             "zh": "内容保存在实例数据卷（/var/lib/ghost/content），终止实例前请先备份。" }
         ]
+      },
+      "cost_estimate": {
+        "monthly_usd": 18,
+        "note": {
+          "en": "Verified default (t3.small + 30 GB gp3, us-east-1 on-demand): ~$15.2 + ~$2.4 per month.",
+          "zh": "按已验证默认配置估算（t3.small + 30GB gp3，us-east-1 按需计费）：约 $15.2 + $2.4/月。"
+        }
       }
     },
     "release": {

@@ -1,5 +1,5 @@
 # CoreNova Launch · 应用注册（App Schema 唯一事实源）
-# 契约：contracts/app-schema.md（校验规则见 §5，共 17 条）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 18 条）
 #
 # 关于 app_type 的选择说明：
 # Uptime Kuma 官方镜像开箱即用形态是内嵌 SQLite（2.x 首启向导默认选项即 SQLite），
@@ -77,6 +77,13 @@ deployment:
     notes:
       - en: "Monitoring data is stored on the instance's data volume (/app/data); back it up before terminating the instance."
         zh: "监控数据保存在实例数据卷（/app/data），终止实例前请先备份。"
+  # 月成本估算（app-schema.md §5 规则18）：人工核对的数字，不是前端算的——调价随注册文件版本化。
+  # 口径：t3.small 按需 730h ≈ $15.2 + 30GB gp3 ≈ $2.4（us-east-1）。
+  cost_estimate:
+    monthly_usd: 18
+    note:
+      en: "Verified default (t3.small + 30 GB gp3, us-east-1 on-demand): ~$15.2 instance + ~$2.4 storage per month. Your actual AWS bill applies."
+      zh: "按已验证默认配置估算（t3.small + 30GB gp3，us-east-1 按需计费）：实例约 $15.2/月 + 存储约 $2.4/月。以 AWS 实际账单为准。"
 
 website:
   featured: true

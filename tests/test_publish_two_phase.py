@@ -76,7 +76,10 @@ def sample_manifest(**over) -> dict:
                            "admin_setup": {"en": "Setup wizard on first visit.",
                                            "zh": "首次访问进入初始化向导。"},
                            "notes": [{"en": "Back up the data volume.", "zh": "备份数据卷。"}],
-                       }},
+                       },
+                       "cost_estimate": {"monthly_usd": 18,
+                                         "note": {"en": "t3.small + 30 GB gp3.",
+                                                  "zh": "t3.small + 30GB gp3。"}}},
             "release": {"type": "initial", "previous_version": "", "type_evidence": "rule1"},
         },
     }
@@ -264,6 +267,20 @@ def test_deploy_guide_key_absent_when_not_registered(tmp_path):
     spec = make_spec(tmp_path, lambda d: d["deployment"].__delitem__("post_deploy"))
     m = mf.build(spec, tmp_path, resolved, image, platform, outcome, Cfg(), "local-2")
     assert "post_deploy" not in m["website"]["deploy"]
+
+
+def test_cost_estimate_projected_when_registered(tmp_path):
+    make_spec, resolved, image, platform, outcome = _build_inputs(tmp_path)
+    spec = make_spec(tmp_path)
+    m = mf.build(spec, tmp_path, resolved, image, platform, outcome, Cfg(), "local-3")
+    assert m["website"]["deploy"]["cost_estimate"] == spec.g("deployment.cost_estimate")
+
+
+def test_cost_estimate_key_absent_when_not_registered(tmp_path):
+    make_spec, resolved, image, platform, outcome = _build_inputs(tmp_path)
+    spec = make_spec(tmp_path, lambda d: d["deployment"].__delitem__("cost_estimate"))
+    m = mf.build(spec, tmp_path, resolved, image, platform, outcome, Cfg(), "local-4")
+    assert "cost_estimate" not in m["website"]["deploy"]
 
 
 def test_config_defaults_present(monkeypatch):

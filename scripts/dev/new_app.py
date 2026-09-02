@@ -29,7 +29,7 @@ WEBSITE_CATEGORIES = {"cms", "ai", "media", "devops", "productivity"}
 
 SPEC_TEMPLATE = '''\
 # CoreNova Launch · 应用注册（App Schema 唯一事实源）
-# 契约：contracts/app-schema.md（校验规则见 §5，共 17 条）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 18 条）
 # 由 scripts/dev/new_app.py 生成。所有 TODO 必须在上线前用**实测事实**填掉
 # （生成时打印过"事实核对单"）；校验器会把每一处未填项报成违规。
 
@@ -98,6 +98,12 @@ deployment:
   #     zh: "..."
   #   notes:
   #     - {{ en: "...", zh: "..." }}
+  # TODO 核对单8（规则18，建议）：人工核对月成本后填（价格是注册事实，前端不算）
+  # cost_estimate:
+  #   monthly_usd: 18
+  #   note:
+  #     en: "t3.small + 30 GB gp3, us-east-1 on-demand."
+  #     zh: "t3.small + 30GB gp3，us-east-1 按需计费。"
 
 website:
   featured: false
@@ -253,6 +259,8 @@ def print_checklist(args: argparse.Namespace) -> None:
    .venv/bin/python scripts/verify/validate_app_schema.py --app {args.name}
    GITHUB_TOKEN=$(gh auth token) .venv/bin/python scripts/verify/run_application_verify.py --app {args.name}
 7) 官网图标（跨仓，人工）：把 {args.name}.svg 放进 Website 仓 public/icons/（缺失时回退字母头像）。
+8) 月成本估算（规则18，建议）：定稿 size 后按实例档×区域价格人工核对 monthly_usd
+   （如 t3.small 按需 730h ≈ $15.2 + 30GB gp3 ≈ $2.4，us-east-1）。
 """)
 
 

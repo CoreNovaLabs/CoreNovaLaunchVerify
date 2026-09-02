@@ -1,4 +1,4 @@
-"""app-schema.md §5 十五条的负向用例：每种越界都必须被拒。"""
+"""app-schema.md §5 十八条的负向用例：每种越界都必须被拒。"""
 
 from __future__ import annotations
 
@@ -57,6 +57,13 @@ GOOD_SPEC: dict = {
                 "zh": "首次访问进入初始化向导；没有预置账号密码。",
             },
             "notes": [{"en": "Back up the data volume.", "zh": "备份数据卷。"}],
+        },
+        "cost_estimate": {
+            "monthly_usd": 18,
+            "note": {
+                "en": "t3.small + 30 GB gp3, us-east-1 on-demand.",
+                "zh": "t3.small + 30GB gp3，us-east-1 按需计费。",
+            },
         },
     },
     "website": {
@@ -247,6 +254,40 @@ def test_rule17_malformed_shapes_report_not_crash(tmp_path):
 def test_rule17_absent_is_fine(tmp_path):
     def m(d):
         del d["deployment"]["post_deploy"]
+
+    assert errors(tmp_path, m) == []
+
+
+def test_rule18_nonpositive_usd_rejected(tmp_path):
+    def m(d):
+        d["deployment"]["cost_estimate"] = {"monthly_usd": 0}
+
+    assert any("规则18" in e and "monthly_usd" in e for e in errors(tmp_path, m))
+
+
+def test_rule18_note_requires_both_languages(tmp_path):
+    def m(d):
+        d["deployment"]["cost_estimate"] = {"monthly_usd": 18, "note": {"en": "t3.small + 30GB gp3"}}
+
+    assert any("规则18" in e and "note" in e for e in errors(tmp_path, m))
+
+
+def test_rule18_sensitive_words_rejected_in_note(tmp_path):
+    def m(d):
+        d["deployment"]["cost_estimate"]["note"] = {
+            "en": "pay the bill with your token", "zh": "用 token 付账单"}
+
+    assert any("规则18" in e and "敏感词" in e for e in errors(tmp_path, m))
+
+
+def test_rule18_malformed_shape_report_not_crash(tmp_path):
+    errs = errors(tmp_path, lambda d: d["deployment"].__setitem__("cost_estimate", "18/month"))
+    assert any("规则18" in e and "映射" in e for e in errs), errs
+
+
+def test_rule18_absent_is_fine(tmp_path):
+    def m(d):
+        del d["deployment"]["cost_estimate"]
 
     assert errors(tmp_path, m) == []
 

@@ -1,0 +1,34 @@
+# 「申请上架」入口的落地模板：官网页脚 / 分类空态的 Request an app 链接指向这里。
+# 需求进来 = 接入 roadmap 的候选；能否接入由 app-schema 契约（版本 tag 形态、官方镜像、
+# 单容器边界）决定，评估结论回写在 issue 里。
+name: Request an app 申请上架
+description: Suggest an open source app for CoreNova to verify and offer one-click AWS deploys
+labels: ["app-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! We verify every app against the app contract before listing it
+        (see contracts/app-schema.md). 感谢！每个应用都会先按契约完成逐版本验证再上架。
+  - type: input
+    id: repo
+    attributes:
+      label: Upstream repository 上游仓库（owner/name）
+      description: The app's official GitHub repo. 应用的官方 GitHub 仓库。
+      placeholder: louislam/uptime-kuma
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: What would you run it for? 你打算用它做什么？
+      description: Helps us pick sizing and test scenarios. 帮助我们确定资源档与测试场景。
+    validations:
+      required: true
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Packaging prerequisites 打包前提（有助于加速评估）
+      options:
+        - label: Official Docker image exists, and release tags map to exact image tags 官方镜像存在，且 release tag 能对应到精确镜像 tag
+        - label: Single container is a supported upstream form (embedded SQLite etc.) 单容器是上游支持的形态（如内嵌 SQLite）

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验 apps/{app}.yaml 是否满足 app-schema.md §5 十七条 + app-profiles 阶梯。
+"""校验 apps/{app}.yaml 是否满足 app-schema.md §5 十八条 + app-profiles 阶梯。
 
 用法：
     python scripts/verify/validate_app_schema.py --app ghost

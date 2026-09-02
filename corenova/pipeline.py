@@ -79,7 +79,7 @@ def run_verification(
     violations = appspec.validate(spec, root, cfg.region)
     if violations:
         raise StageError("RESOLVED", "app_schema", ValueError("\n".join(violations)))
-    log(f"{app}: schema 校验通过（app-schema §5 十七条）")
+    log(f"{app}: schema 校验通过（app-schema §5 十八条）")
 
     backend = make_backend(cfg)
     run_id = os.environ.get("GITHUB_RUN_ID") or time.strftime("local-%Y%m%d%H%M%S", time.gmtime())

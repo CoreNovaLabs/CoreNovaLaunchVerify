@@ -143,6 +143,11 @@ def build(
     if isinstance(post_deploy, dict) and post_deploy:
         website["deploy"]["post_deploy"] = post_deploy
 
+    # 月成本估算（app-schema.md 规则18）：同为可选展示字段，注册了才投影
+    cost = spec.g("deployment.cost_estimate")
+    if isinstance(cost, dict) and cost:
+        website["deploy"]["cost_estimate"] = cost
+
     manifest: dict[str, Any] = {
         "schema_version": "1.0",
         "verification_id": vid,
