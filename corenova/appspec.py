@@ -347,6 +347,15 @@ def validate(spec: AppSpec, root: Path, platform_region: str) -> list[str]:
                                str(note.get("en")) + str(note.get("zh")), re.I):
                     e.append("规则18: cost_estimate.note 含敏感词——口径说明不放凭据类内容")
 
+    # 19 data_path：容器内数据挂载目录（CFN DataContainerPath 的真相源）。
+    # 必须以 / 开头；含空格或 shell 元字符则拒绝——路径不得注入命令。
+    dp = g("deployment.data_path")
+    if dp is not None:
+        if not isinstance(dp, str) or not dp.startswith("/"):
+            e.append(f"规则19: deployment.data_path 必须以 / 开头的字符串，实为 {dp!r}")
+        elif re.search(r"[\s;&|`$]", dp):
+            e.append(f"规则19: deployment.data_path 含非法字符（空格或 shell 元字符）：{dp!r}")
+
     # tests 目录
     tdir = g("tests.predefined_dir")
     if not tdir:

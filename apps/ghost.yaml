@@ -92,6 +92,9 @@ deployment:
     note:
       en: "Verified default (t3.small + 30 GB gp3, us-east-1 on-demand): ~$15.2 instance + ~$2.4 storage per month. Your actual AWS bill applies."
       zh: "按已验证默认配置估算（t3.small + 30GB gp3，us-east-1 按需计费）：实例约 $15.2/月 + 存储约 $2.4/月。以 AWS 实际账单为准。"
+  # 容器内数据路径（app-schema.md §5 规则19）：与 compose 文件的容器挂载目标一致，
+  # 是 CFN DataContainerPath 参数的唯一真相源。
+  data_path: "/var/lib/ghost/content"
 
 website:
   featured: true

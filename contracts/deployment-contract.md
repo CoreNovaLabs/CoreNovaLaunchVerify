@@ -64,7 +64,8 @@ R2 = Website Runtime Source of Truth
     "cost_estimate": {
       "monthly_usd": 18,
       "note": { "en": "Verified default (t3.small + 30 GB gp3): ~$15.2 + ~$2.4/mo.", "zh": "按已验证默认配置估算：约 $15.2 + $2.4/月。" }
-    }
+    },
+    "data_path": "/var/lib/ghost/content"
   },
 
   "release": {
@@ -192,6 +193,7 @@ Manifest: https://pub-xxxx.r2.dev/screenshots/ghost/v5.75.0/home.png
 | 截图 | `screenshots[].url` + `screenshots_order` | ❌ URL 与顺序均来自 Manifest，前端不得自行拼接对象路径 |
 | 部署后指引（后台入口/首次登录方式/注意事项） | `deploy.post_deploy`（源 = app schema `deployment.post_deploy`，app-schema.md 规则17） | ❌ 必须来自 Manifest；无该键的应用前端只渲染平台通用步骤，不得自造后台路径或凭据提示 |
 | 部署区成本估算卡 | `deploy.cost_estimate`（源 = app schema `deployment.cost_estimate`，app-schema.md 规则18） | ❌ 数字与口径均来自 Manifest；前端不得按实例规格自行计算价格 |
+| 容器内数据路径 | `deploy.data_path`（源 = app schema `deployment.data_path`，app-schema.md 规则19） | ❌ 必须来自 Manifest；无该键的应用不显示数据路径，前端不得从 compose 文件推断 |
 
 ## 4. `release.type` 枚举与数据化
 

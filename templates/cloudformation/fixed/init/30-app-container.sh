@@ -11,6 +11,8 @@ DATA_DIR="${CFNOVA_DATA_DIR:-/var/lib/corenova/app/data}"
 DATA_MOUNT="${CFNOVA_DATA_CONTAINER_PATH:-/data}"
 APP_URL="${CFNOVA_APP_URL:-}"
 EXTRA_ENV_FILE="${CFNOVA_EXTRA_ENV_FILE:-}"
+LOG_GROUP="${CFNOVA_LOG_GROUP:-/corenova/apps}"
+AWS_REGION="${CFNOVA_AWS_REGION:-us-east-1}"
 ENV_FILE="/opt/corenova/env/${APP_NAME}.env"
 
 install -d -m 0755 "$DATA_DIR"
@@ -42,7 +44,7 @@ EnvironmentFile=${ENV_FILE}
 ExecStartPre=-/usr/bin/docker rm -f ${APP_NAME}
 ExecStart=/usr/bin/docker run --rm --name ${APP_NAME} \\
   --label corenova.app=${APP_NAME} \\
-  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \\
+  --log-driver awslogs --log-opt awslogs-group=${LOG_GROUP} --log-opt awslogs-stream=${APP_NAME} --log-opt awslogs-region=${AWS_REGION} \\
   -p 127.0.0.1:${CONTAINER_PORT}:${CONTAINER_PORT} \\
   -v ${DATA_DIR}:${DATA_MOUNT} \\
   --env-file ${ENV_FILE} \\

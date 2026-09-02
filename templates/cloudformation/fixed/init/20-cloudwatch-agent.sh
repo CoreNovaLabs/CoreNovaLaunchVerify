@@ -19,6 +19,7 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/corenova-config.json <<EOF
         "collect_list": [
           { "file_path": "/var/log/corenova/*.log", "log_group_name": "${LOG_GROUP}", "log_stream_name": "{instance_id}/corenova", "timezone": "UTC" },
           { "file_path": "/var/log/nginx/error.log", "log_group_name": "${LOG_GROUP}", "log_stream_name": "{instance_id}/nginx-error", "timezone": "UTC" },
+          { "file_path": "/var/log/nginx/corenova-*.access.log", "log_group_name": "${LOG_GROUP}", "log_stream_name": "{instance_id}/nginx-access", "timezone": "UTC" },
           { "file_path": "/var/log/syslog", "log_group_name": "${LOG_GROUP}", "log_stream_name": "{instance_id}/syslog", "timezone": "UTC" }
         ]
       }

@@ -93,3 +93,24 @@ systemctl daemon-reload
 systemctl enable nginx
 systemctl restart nginx
 echo "[corenova] nginx serving for ${APP_NAME} on 127.0.0.1:${CONTAINER_PORT}"
+
+# Logrotate: keep 7 days of platform and nginx logs. The corenova log directory
+# and nginx access log are not covered by any package-provided logrotate rule.
+cat > /etc/logrotate.d/corenova <<EOF
+/var/log/corenova/*.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+/var/log/nginx/corenova-*.access.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF

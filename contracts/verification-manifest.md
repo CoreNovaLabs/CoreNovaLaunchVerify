@@ -175,7 +175,8 @@
           "en": "Verified default (t3.small + 30 GB gp3, us-east-1 on-demand): ~$15.2 + ~$2.4 per month.",
           "zh": "按已验证默认配置估算（t3.small + 30GB gp3，us-east-1 按需计费）：约 $15.2 + $2.4/月。"
         }
-      }
+      },
+      "data_path": "/var/lib/ghost/content"
     },
     "release": {
       "type": "new_version",

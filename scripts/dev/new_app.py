@@ -104,6 +104,7 @@ deployment:
   #   note:
   #     en: "t3.small + 30 GB gp3, us-east-1 on-demand."
   #     zh: "t3.small + 30GB gp3，us-east-1 按需计费。"
+  # data_path: "/data"   # TODO 核对单9（规则19）：compose 文件的容器挂载目标路径
 
 website:
   featured: false

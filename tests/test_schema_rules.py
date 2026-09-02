@@ -1,4 +1,4 @@
-"""app-schema.md §5 十八条的负向用例：每种越界都必须被拒。"""
+"""app-schema.md §5 十九条的负向用例：每种越界都必须被拒。"""
 
 from __future__ import annotations
 
@@ -65,6 +65,7 @@ GOOD_SPEC: dict = {
                 "zh": "t3.small + 30GB gp3，us-east-1 按需计费。",
             },
         },
+        "data_path": "/var/lib/ghost/content",
     },
     "website": {
         "featured": True,
@@ -288,6 +289,27 @@ def test_rule18_malformed_shape_report_not_crash(tmp_path):
 def test_rule18_absent_is_fine(tmp_path):
     def m(d):
         del d["deployment"]["cost_estimate"]
+
+    assert errors(tmp_path, m) == []
+
+
+def test_rule19_must_start_with_slash(tmp_path):
+    def m(d):
+        d["deployment"]["data_path"] = "var/lib/ghost"
+
+    assert any("规则19" in e and "/ 开头" in e for e in errors(tmp_path, m))
+
+
+def test_rule19_shell_chars_rejected(tmp_path):
+    def m(d):
+        d["deployment"]["data_path"] = "/data; rm -rf /"
+
+    assert any("规则19" in e and "非法字符" in e for e in errors(tmp_path, m))
+
+
+def test_rule19_absent_is_fine(tmp_path):
+    def m(d):
+        del d["deployment"]["data_path"]
 
     assert errors(tmp_path, m) == []
 

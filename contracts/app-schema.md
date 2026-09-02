@@ -117,6 +117,8 @@ deployment:                           # required, 网站展示用的静态部署
     note:                             # optional, Localized；估算口径（实例档/磁盘/区域），建议注明"以实际账单为准"
       en: "Verified default (t3.small + 30 GB gp3, us-east-1 on-demand): ~$15.2 + ~$2.4 per month."
       zh: "按已验证默认配置估算（t3.small + 30GB gp3，us-east-1 按需计费）：约 $15.2 + $2.4/月。"
+  data_path: "/var/lib/ghost/content" # optional, string；容器内数据挂载目录（与 compose 文件的容器目标一致），
+                                      # 是 CFN DataContainerPath 参数的真相源；必须以 / 开头（§5 规则19）
 
 release_type_override: null           # optional, enum(initial|new_version|security_update|bug_fix)
                                       # 仅在上游 release notes 无法被 deployment-contract.md §4.1 规则可靠判定时人工覆盖；非空必须带 `# reason:` 注释
@@ -173,6 +175,7 @@ website:                              # required
 | `deployment.post_deploy.notes[]` | ❌ | Localized[] | `[]` | 每项 `en` 与 `zh` 都必须非空 |
 | `deployment.cost_estimate.monthly_usd` | 条件必填 | number | — | `cost_estimate` 存在时必填且 > 0；按需价格估算（实例 + EBS） |
 | `deployment.cost_estimate.note` | ❌ | Localized | `null` | 估算口径说明；若存在 `en`/`zh` 均非空；含敏感词即校验失败 |
+| `deployment.data_path` | ❌ | string | `null` | 容器内数据挂载目录，必须以 `/` 开头；与 compose 文件容器目标一致，是 CFN `DataContainerPath` 的真相源 |
 | `release_type_override` | ❌ | enum | `null` | 非空时必须带 `# reason:`（deployment-contract.md §4.1） |
 | `website.featured` | ✅ | bool | — | — |
 | `website.tags` | ✅ | string[] | — | 非空 |
@@ -274,6 +277,7 @@ health_check:
 16. `deploy.extra_environment` 每项必须匹配 `^[A-Za-z_][A-Za-z0-9_]*=.+$`（KEY=VALUE）；KEY 或 VALUE 含 `secret`/`password`/`token`/`private_key`（不区分大小写）即校验失败——敏感值走 SSM Parameter Store / Secrets，不进 app schema（§7 单容器边界同理）。
 17. `deployment.post_deploy` 若存在：必须是映射；`admin_path` 若存在必须以 `/` 开头；`admin_path` 存在时 `admin_setup` 的 `en`/`zh` 均必须非空（有后台入口就必须说明怎么进去）；`notes[]` 每项 `en`/`zh` 均非空；所有文案含 `secret`/`password`/`token`/`private_key`（不区分大小写）即校验失败——凭据不进契约，只允许写"去哪获取"。
 18. `deployment.cost_estimate` 若存在：必须是映射；`monthly_usd` 必须为正数（写了 `cost_estimate` 就必须给出可信数字）；`note` 若存在 `en`/`zh` 均非空，且含 `secret`/`password`/`token`/`private_key`（不区分大小写）即校验失败——价格与口径是注册时人工核对的事实，前端只展示、绝不按实例规格自行计算。
+19. `deployment.data_path` 若存在：必须为字符串且以 `/` 开头；含空格或 shell 元字符（`;&|`$`）则校验失败。该值必须与应用 compose 文件的容器挂载目标一致——它是 CFN `DataContainerPath` 参数的唯一真相源，compose / CFN / extra_environment 三处不得各自硬编码导致漂移。
 
 ## 6. 反模式
 
@@ -287,6 +291,7 @@ health_check:
 - ❌ 把 digest 静态写死在 app schema（digest 是运行时解析结果，归 Verification Manifest）。
 - ❌ 在 `deployment.post_deploy` 文案里写初始密码/账号（凭据面进契约即泄漏面；只写"去哪获取"，规则 17）。
 - ❌ 前端按实例规格/磁盘自行计算成本（价格是事实，必须来自 `deployment.cost_estimate` 注册数据，规则 18）。
+- ❌ compose 文件的容器挂载目标、`extra_environment` 中的路径引用、CFN `DataContainerPath` 三处各自硬编码不同路径（必须以 `deployment.data_path` 为唯一真相源，规则 19）。
 - ❌ 把 `ami_id` / `region` 写进 app schema（那是平台层契约，归 Platform Contract）。
 
 ## 7. 部署模型边界：当前为单容器（2026-08-30 明确）

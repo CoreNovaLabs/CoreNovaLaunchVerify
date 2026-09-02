@@ -148,6 +148,11 @@ def build(
     if isinstance(cost, dict) and cost:
         website["deploy"]["cost_estimate"] = cost
 
+    # 容器内数据路径（app-schema.md 规则19）：注册了才投影，前端用于部署后指引
+    dp = spec.g("deployment.data_path")
+    if isinstance(dp, str) and dp:
+        website["deploy"]["data_path"] = dp
+
     manifest: dict[str, Any] = {
         "schema_version": "1.0",
         "verification_id": vid,
