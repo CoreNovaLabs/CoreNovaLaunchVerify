@@ -1,0 +1,91 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 17 条）
+#
+# 关于 app_type 的选择说明：
+# Uptime Kuma 官方镜像开箱即用形态是内嵌 SQLite（2.x 首启向导默认选项即 SQLite），
+# 监控数据落在容器内 /app/data，必须持久化，因此按部署形态事实归为 stateful_app。
+#
+# 版本可观测性：实测 louislam/uptime-kuma:2.5.3 镜像 config 无版本 env
+# （只有 NODE_VERSION/YARN_VERSION/UPTIME_KUMA_* 开关），故不用 kind=env；
+# /app/package.json 的 version 字段是 server.js 自身读取的版本源，exec_command 取它。
+
+app:
+  name: "uptime-kuma"
+  category: "devops"
+  app_type: "stateful_app"
+  icon: "/icons/uptime-kuma.svg"
+  i18n:
+    en:
+      display_name: "Uptime Kuma"
+      description: "Self-hosted monitoring for HTTP, TCP, ping and more"
+    zh:
+      display_name: "Uptime Kuma 监控"
+      description: "自托管可用性监控，支持 HTTP、TCP、Ping 等探测"
+
+source:
+  repo: "louislam/uptime-kuma"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "louislam/uptime-kuma"
+  # 上游 release tag 本身即 Docker Hub tag（实测 2.5.3 无前缀），直接用 {version}
+  image_tag_template: "louislam/uptime-kuma:{version}"
+  container_port: 3001
+  compose_file: "apps/uptime-kuma/docker-compose.yml"
+  # Uptime Kuma 内嵌 SQLite 开箱即用，无需注入应用私有 env
+
+health_check:
+  # 2.x 首启 / 会 302 到 /setup-database（数据库选择向导），完成设置后 302 到 /dashboard；
+  # 探针跟随重定向，两种状态的落点都是 200，因此打 / 稳定（实测 2.5.3）。
+  endpoint: "/"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 180
+  version_assertion:
+    kind: "exec_command"
+    command: >-
+      node -p 'require("/app/package.json").version'
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/uptime-kuma/tests"
+  scenarios:
+    - slug: "setup"
+      url: "/"
+      caption:
+        en: "First-run setup wizard"
+        zh: "首次运行设置向导"
+
+deployment:
+  size: "small"
+  documentation_url: "https://github.com/louislam/uptime-kuma/wiki"
+  regions: ["us-east-1"]
+  # 部署后指引（app-schema.md §5 规则17）：只写"去哪/怎么获取"，凭据不进契约。
+  # Uptime Kuma 的后台就是应用本身（无独立后台路径）：首访走一次性设置向导。
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "The first visit walks you through two one-time steps: pick a database (keep the default SQLite unless you have a specific need), then create the admin account. There are no preset credentials."
+      zh: "首次访问有两步一次性设置：先选择数据库（如无特殊需求保持默认 SQLite），然后创建管理员账户；没有预置账号密码。"
+    notes:
+      - en: "Monitoring data is stored on the instance's data volume (/app/data); back it up before terminating the instance."
+        zh: "监控数据保存在实例数据卷（/app/data），终止实例前请先备份。"
+
+website:
+  featured: true
+  screenshots_order: ["setup"]
+  tags: ["monitoring", "uptime", "status-page"]
+  features:
+    - en: "Automated testing before each release"
+      zh: "每次发布前自动化测试"
+    - en: "HTTP, TCP, ping and DNS probes with public status pages"
+      zh: "HTTP、TCP、Ping、DNS 探测与公开状态页"
+    - en: "Built-in SQLite storage, one-click CloudFormation deploy"
+      zh: "内置 SQLite 存储，CloudFormation 一键部署"
