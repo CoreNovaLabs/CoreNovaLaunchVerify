@@ -653,6 +653,7 @@ Resources:
                 EXTRA_ENV_FILE="${CFNOVA_EXTRA_ENV_FILE:-}"
                 LOG_GROUP="${CFNOVA_LOG_GROUP:-/corenova/apps}"
                 AWS_REGION="${CFNOVA_AWS_REGION:-us-east-1}"
+                HEALTH_PATH="${CFNOVA_HEALTH_PATH:-/}"
                 ENV_FILE="/opt/corenova/env/${APP_NAME}.env"
 
                 install -d -m 0755 "$DATA_DIR"
@@ -682,9 +683,13 @@ Resources:
                 RestartSec=5
                 EnvironmentFile=${ENV_FILE}
                 ExecStartPre=-/usr/bin/docker rm -f ${APP_NAME}
+                ExecStartPre=/usr/bin/docker pull ${IMAGE_REFERENCE}
                 ExecStart=/usr/bin/docker run --rm --name ${APP_NAME} \\
                   --label corenova.app=${APP_NAME} \\
                   --log-driver awslogs --log-opt awslogs-group=${LOG_GROUP} --log-opt awslogs-stream=${APP_NAME} --log-opt awslogs-region=${AWS_REGION} \\
+                  --health-cmd "curl -sf http://127.0.0.1:${CONTAINER_PORT}${HEALTH_PATH} || exit 1" \\
+                  --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 60s \\
+                  --stop-timeout 30 \\
                   -p 127.0.0.1:${CONTAINER_PORT}:${CONTAINER_PORT} \\
                   -v ${DATA_DIR}:${DATA_MOUNT} \\
                   --env-file ${ENV_FILE} \\
