@@ -50,10 +50,20 @@ Parameters:
 
   DiskGb:
     Type: Number
-    Default: 30
+    Default: 20
     MinValue: 8
     MaxValue: 1024
-    Description: Root gp3 EBS volume size.
+    Description: Root gp3 EBS volume size (OS + Docker engine; application data lives on DataVolume).
+
+  DataVolumeSize:
+    Type: Number
+    Default: 30
+    MinValue: 8
+    MaxValue: 4096
+    Description: >
+      Separate gp3 EBS volume for application data (mounted at /var/lib/corenova/app/data).
+      This volume is NOT deleted when the instance terminates — it survives stack deletion
+      and can be reattached to a new instance. Snapshot it before destroying the stack.
 
   SubnetId:
     Type: AWS::EC2::Subnet::Id
@@ -792,6 +802,14 @@ Resources:
             VolumeSize: {Ref: DiskGb}
             Encrypted: true
             DeleteOnTermination: true
+        # Data volume: application data survives instance termination.
+        # On first boot, UserData formats it ext4; on reattach, it mounts the existing filesystem.
+        - DeviceName: /dev/sdf
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: {Ref: DataVolumeSize}
+            Encrypted: true
+            DeleteOnTermination: false
       Tags:
         - Key: Name
           Value: {Fn::Sub: "corenova-${AppName}"}
@@ -845,6 +863,26 @@ Resources:
                 -d '{"Status":"FAILURE","Reason":"cfn-init unavailable","UniqueId":"corenova-bootstrap","Data":"101"}' \
                 '${WaitHandle}'
               exit 101
+            fi
+
+            # --- Mount data volume -------------------------------------------------------
+            # The data volume (/dev/sdf) persists across instance terminations (DeleteOnTermination: false).
+            # First boot: format ext4. Subsequent boots: mount the existing filesystem.
+            DATA_DEV=/dev/sdf
+            DATA_MOUNT=/var/lib/corenova/app/data
+            if [ -b "$DATA_DEV" ]; then
+              if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
+                echo "[corenova] formatting data volume $DATA_DEV as ext4"
+                mkfs.ext4 -m 0 -L corenova-data "$DATA_DEV"
+              fi
+              mkdir -p "$DATA_MOUNT"
+              mount -o noatime "$DATA_DEV" "$DATA_MOUNT"
+              if ! grep -q "$DATA_MOUNT" /etc/fstab; then
+                echo "$DATA_DEV $DATA_MOUNT ext4 defaults,noatime 0 2" >> /etc/fstab
+              fi
+              echo "[corenova] data volume mounted at $DATA_MOUNT"
+            else
+              echo "[corenova] WARNING: $DATA_DEV not found — data volume skipped"
             fi
 
             OVERRIDE=""
