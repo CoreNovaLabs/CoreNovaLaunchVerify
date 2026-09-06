@@ -15,10 +15,9 @@ import pathlib
 import pytest
 import yaml
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+from corenova import appspec, profiles
 
-from corenova import appspec  # noqa: E402
-from corenova import profiles  # noqa: E402
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def _load_new_app():

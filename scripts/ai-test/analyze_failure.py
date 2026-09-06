@@ -32,12 +32,10 @@ import re
 import sys
 from typing import Any
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-
-from corenova.config import Config  # noqa: E402
-from corenova.failure import MAX_ATTEMPTS, classify  # noqa: E402
-from corenova.publish import LOCAL_CHECKS  # noqa: E402
-from corenova.util import log  # noqa: E402
+from corenova.config import Config
+from corenova.failure import MAX_ATTEMPTS, classify
+from corenova.publish import LOCAL_CHECKS
+from corenova.util import log
 
 # state-machine §8 禁止清单（这些路径出现在建议里必须被拒绝）
 DISALLOWED_PATTERNS = (

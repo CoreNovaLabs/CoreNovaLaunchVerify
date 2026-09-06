@@ -1,4 +1,4 @@
-"""Load `apps/{app}.yaml` and enforce app-schema.md §5 (17 rules) + app-profiles.md.
+"""Load `apps/{app}.yaml` and enforce app-schema.md §5 (19 rules) + app-profiles.md.
 
 The validator is deliberately self-contained: Repo C's CI must be able to reject a bad
 registration before any Docker / AWS / network work happens.
@@ -58,7 +58,7 @@ class AppSpec:
         try:
             return int(raw)
         except (ValueError, TypeError):
-            raise ValueError(f"deploy.container_port 必须为整数，实际值为 {raw!r}")
+            raise ValueError(f"deploy.container_port 必须为整数，实际值为 {raw!r}") from None
 
     @property
     def source_repo(self) -> str:
@@ -100,22 +100,13 @@ class AppSpec:
         instance = self.g("deploy.instance_type") or self.g("resources.instance_type") or base_instance
         disk = self.g("deploy.disk_gb") or self.g("resources.disk_gb") or base_disk
         # 低于 min_size 地板必须带 `# override: <reason>`
-        if _instance_rank(instance) < _instance_rank(min_instance) or int(disk) < min_disk:
+        if profiles.instance_rank(instance) < profiles.instance_rank(min_instance) or int(disk) < min_disk:
             if "override:" not in self.raw:
                 raise ValueError(
                     f"app-schema §5 规则 10：{instance}/{disk}GB 低于 {self.app_type} 的 "
                     f"min_size 地板（{min_instance}/{min_disk}GB），必须写 `# override: <reason>`"
                 )
         return str(instance), int(disk)
-
-    def launch_url(self, region: str) -> str:
-        tpl = self.g("deployment.launch_url_template") or "https://{app}.{region}.corenovalaunch.app"
-        return tpl.format(app=self.name, region=region)
-
-
-def _instance_rank(instance: str) -> int:
-    order = ["t3.nano", "t3.micro", "t3.small", "t3.medium", "t3.large", "t3.xlarge", "t3.2xlarge"]
-    return order.index(instance) if instance in order else len(order)
 
 
 def load(name: str, root: Path) -> AppSpec:

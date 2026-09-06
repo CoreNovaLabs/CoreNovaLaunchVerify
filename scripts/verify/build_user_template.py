@@ -186,7 +186,6 @@ def main() -> int:
     if args.publish_s3:
         # 深链 templateURL 的唯一事实源（deployment-contract.md §2.4）：
         # 模板活在公开桶里，站点不再自托管副本。发布失败必须让本脚本退出非零。
-        sys.path.insert(0, str(ROOT))
         from corenova import template_publish
         from corenova.config import Config
 

@@ -18,10 +18,8 @@ import argparse
 import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-
-from corenova import appspec, profiles  # noqa: E402
-from corenova.config import Config  # noqa: E402
+from corenova import appspec, profiles
+from corenova.config import Config
 
 # 官网当前实际渲染的分类（website/src/data/categories.ts）。其它枚举值合法，
 # 但没有分类页/筛选项（见官网审计结论），接入时需要人工权衡。
@@ -29,7 +27,7 @@ WEBSITE_CATEGORIES = {"cms", "ai", "media", "devops", "productivity"}
 
 SPEC_TEMPLATE = '''\
 # CoreNova Launch · 应用注册（App Schema 唯一事实源）
-# 契约：contracts/app-schema.md（校验规则见 §5，共 18 条）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 19 条）
 # 由 scripts/dev/new_app.py 生成。所有 TODO 必须在上线前用**实测事实**填掉
 # （生成时打印过"事实核对单"）；校验器会把每一处未填项报成违规。
 

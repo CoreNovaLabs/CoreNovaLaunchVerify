@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
 
@@ -69,7 +68,6 @@ def sample_manifest(**over) -> dict:
                  "url": "/screenshots/ghost/v6.61.0/home.png", "caption": {"en": "Home", "zh": "首页"}}],
             "deploy": {"docker_image": "ghost:6.61.0-alpine", "regions": ["us-east-1"],
                        "instance_type": "t3.small", "container_port": 2368,
-                       "launch_url": "https://ghost.us-east-1.corenovalaunch.app",
                        "documentation_url": "https://ghost.org/docs/",
                        "post_deploy": {
                            "admin_path": "/ghost/",
@@ -116,6 +114,109 @@ def test_publish_commit_point_writes_all_three(tmp_path, shots):
     assert (out / "reports/ghost-v6.61.0-20260829-001.html").exists()
     # 上传成功后 report_url 才被回填（P2 之后才知道键名）
     assert current["report_url"] == "/reports/ghost-v6.61.0-20260829-001.html"
+
+
+def test_versions_index_tracks_committed_versions(tmp_path, shots):
+    """versions/index.json：只收录过 P5 门禁的版本，按 verified_at 倒序、同版本去重。"""
+    out = tmp_path / "data"
+    backend = DirBackend(out)
+    cfg = Cfg()
+    first = sample_manifest()
+    publish.publish(backend, cfg, first, shots, "<html/>")
+
+    # 旧版本被覆盖保护拒绝 → 不进清单
+    older = sample_manifest(app_version="v6.60.0",
+                            verification_id="ghost-v6.60.0-20260829-001",
+                            verified_at="2026-08-24T10:00:00Z")
+    older["website"]["app_version"] = "v6.60.0"
+    older["website"]["verification_id"] = older["verification_id"]
+    res = publish.publish(backend, cfg, older, shots, "<html/>")
+    assert not res.current_written
+
+    # 新版本提交 → 清单倒序收录
+    newer = sample_manifest(app_version="v6.62.0",
+                            verification_id="ghost-v6.62.0-20260830-001",
+                            verified_at="2026-08-30T10:00:00Z",
+                            verification_run_id="200")
+    newer["website"]["app_version"] = "v6.62.0"
+    newer["website"]["verification_id"] = newer["verification_id"]
+    publish.publish(backend, cfg, newer, shots, "<html/>")
+
+    vindex = json.loads((out / "verified/ghost/versions/index.json").read_text())
+    assert vindex["app"] == "ghost"
+    assert [e["app_version"] for e in vindex["versions"]] == ["v6.62.0", "v6.61.0"]
+    assert vindex["versions"][0]["verification_id"] == "ghost-v6.62.0-20260830-001"
+    assert vindex["versions"][0]["status"] == "verified"
+
+    # 同一版本重验（run 更新）→ 清单里替换而非追加
+    again = sample_manifest(app_version="v6.62.0",
+                            verification_id="ghost-v6.62.0-20260830-002",
+                            verified_at="2026-08-30T12:00:00Z",
+                            verification_run_id="201")
+    again["website"]["verification_id"] = again["verification_id"]
+    publish.publish(backend, cfg, again, shots, "<html/>")
+    vindex = json.loads((out / "verified/ghost/versions/index.json").read_text())
+    assert [e["app_version"] for e in vindex["versions"]] == ["v6.62.0", "v6.61.0"]
+    assert vindex["versions"][0]["verification_id"].endswith("-002")
+
+    # P5 门禁失败（旧版本拒绝）时清单保持不变
+    assert json.loads((out / "verified/ghost/versions/index.json").read_text())["versions"][0][
+        "app_version"
+    ] == "v6.62.0"
+
+
+# ------------------------------------------------------------------ 索引并发写保护
+
+
+class RacingDirBackend(DirBackend):
+    """模拟跨应用并发：条件写前被并发方抢先写入 index.json（ETag 失配）。"""
+
+    def __init__(self, root: Path, races: int = 1):
+        super().__init__(root)
+        self._races = races
+
+    def put_if_match(self, key, data, etag):
+        if key == "verified/index.json" and self._races > 0:
+            self._races -= 1
+            other = {
+                "schema_version": "1.0",
+                "apps": [{
+                    "app": "other-app", "app_version": "v1.0.0",
+                    "verification_id": "other-app-v1.0.0-20260829-001",
+                    "status": "verified", "health": "passed",
+                    "verified_at": "2026-08-29T10:00:00Z",
+                }],
+                "generated_at": "2026-08-29T10:00:00Z",
+            }
+            super().put(key, json.dumps(other).encode())
+            return False  # 本方的 ETag 已失配
+        return super().put_if_match(key, data, etag)
+
+
+def test_index_conditional_write_merges_concurrent_app(tmp_path, shots):
+    """并发写冲突 → 重读重合，绝不丢掉并发方的条目（last-writer-wins 反例）。"""
+    out = tmp_path / "data"
+    backend = RacingDirBackend(out, races=2)
+    res = publish.publish(backend, Cfg(), sample_manifest(), shots, "<html/>")
+    assert res.committed
+
+    index = json.loads((out / "verified/index.json").read_text())
+    apps = {a["app"] for a in index["apps"]}
+    assert apps == {"ghost", "other-app"}, "并发方的条目必须保留"
+
+
+def test_index_persistent_conflict_fails_loudly(tmp_path, shots, monkeypatch):
+    """条件写连续失配 → 发布失败，而不是静默丢数据。"""
+    out = tmp_path / "data"
+    backend = DirBackend(out)
+    monkeypatch.setattr(publish, "_INDEX_WRITE_ATTEMPTS", 2)
+
+    def always_lose(key, data, etag):
+        return False
+
+    monkeypatch.setattr(backend, "put_if_match", always_lose)
+    with pytest.raises(RuntimeError, match="条件写连续"):
+        publish.publish(backend, Cfg(), sample_manifest(), shots, "<html/>")
 
 
 def test_missing_screenshot_blocks_commit(tmp_path, shots):

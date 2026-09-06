@@ -13,10 +13,13 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 from urllib.parse import quote as _urlencode
 
+from .gh import github_headers, github_token
 from .util import HttpError, http_json, http_request, is_transitional_error, log
 
 LABEL = "verify-failed"
 MAX_ATTEMPTS = 3
+
+ALL_CLASSIFICATIONS = ("TRANSIENT", "APPLICATION", "TEST", "INFRASTRUCTURE", "MANUAL_REQUIRED")
 
 
 @dataclass
@@ -104,19 +107,19 @@ def repo_name() -> str:
 
 
 def _headers() -> dict[str, str]:
-    tok = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
-    h = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    if tok:
-        h["Authorization"] = f"Bearer {tok}"
-    return h
+    return github_headers(github_token())
 
 
 def find_issue(record: FailureRecord) -> dict[str, Any] | None:
-    """Idempotency key = verification_id (state-machine §7)."""
+    """Idempotency key = verification_id (state-machine §7).
+
+    幂等键在正文 fenced 块里，不在 title 里——搜索必须限定 in:body，
+    用 in:title 永远检不到目标，幂等更新也就从未生效。
+    """
     repo = repo_name()
     if not repo:
         return None
-    q = f"repo:{repo} is:issue in:title {record.verification_id}"
+    q = f"repo:{repo} is:issue in:body {record.verification_id}"
     try:
         hits = http_json(f"https://api.github.com/search/issues?q={_urlencode(q, safe='')}&per_page=5", headers=_headers())
     except HttpError as exc:
@@ -159,7 +162,7 @@ def record_failure(record: FailureRecord) -> None:
         log(f"写失败台账出错（忽略）：{type(exc).__name__}: {exc}")
 
 
-def _meta_of(body: str) -> dict[str, Any]:
+def meta_from_body(body: str) -> dict[str, Any]:
     """从台账正文解析 ```corenova-failure JSON 块；解析失败返回 {}。"""
     m = re.search(r"```corenova-failure\s*(\{.*?\})\s*```", body, re.S)
     if not m:
@@ -192,7 +195,7 @@ def resolve_failures(app: str, app_version: str, verification_id: str) -> None:
         log(f"查询可解决的失败台账出错（忽略）：{exc}")
         return
     for it in hits.get("items") or []:
-        meta = _meta_of(it.get("body") or "")
+        meta = meta_from_body(it.get("body") or "")
         vid_match = verification_id and meta.get("verification_id") == verification_id
         ver_match = (
             app_version
@@ -219,6 +222,67 @@ def resolve_failures(app: str, app_version: str, verification_id: str) -> None:
 def _attempts_of(body: str) -> int:
     m = re.search(r'"attempts":\s*(\d+)', body)
     return int(m.group(1)) if m else 1
+
+
+def dispatch_target(classification: str) -> str:
+    """INFRASTRUCTURE 的复验只能落在 golden-verify，其余一律落 application-verify。"""
+    return "golden-verify.yml" if classification == "INFRASTRUCTURE" else "application-verify.yml"
+
+
+def _label_of(item: dict[str, Any], prefix: str) -> str:
+    for lab in item.get("labels") or []:
+        name = lab.get("name") if isinstance(lab, dict) else str(lab)
+        if name and name.startswith(prefix):
+            return name[len(prefix):]
+    return ""
+
+
+def row_from_issue(item: dict[str, Any], meta: dict[str, Any] | None) -> dict[str, Any]:
+    """issue + fenced metadata → 台账行。§7 规则 1/5：仅 TRANSIENT 且 attempts<3 可自动重试。"""
+    meta = meta or {}
+    classification = str(meta.get("classification") or _label_of(item, "classification:"))
+    attempts = int(meta.get("attempts") or _attempts_of(item.get("body") or ""))
+    return {
+        "issue_number": item.get("number"),
+        "issue_url": item.get("html_url") or "",
+        "app": str(meta.get("app") or _label_of(item, "app:")),
+        "app_version": str(meta.get("app_version") or ""),
+        "verification_id": str(meta.get("verification_id") or ""),
+        "classification": classification,
+        "failed_stage": str(meta.get("failed_stage") or ""),
+        "failed_check": str(meta.get("failed_check") or ""),
+        "attempts": attempts,
+        "run_url": str(meta.get("run_url") or ""),
+        "platform_verification_id": str(meta.get("platform_verification_id") or ""),
+        "retryable": (
+            classification == "TRANSIENT"
+            and attempts < MAX_ATTEMPTS
+            and str(item.get("state") or "").lower() == "open"
+        ),
+        "dispatch_target": dispatch_target(classification),
+        "updated_at": item.get("updated_at") or "",
+    }
+
+
+def open_failures_by_classification(
+    cls: str, limit: int = 50, errors: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """按 label 拉某一分类的 open verify-failed issue，解析成台账行列表。"""
+    repo = repo_name()
+    if not repo:
+        return []
+    q = f"repo:{repo} is:issue is:open label:{LABEL} label:classification:{cls}"
+    try:
+        hits = http_json(
+            f"https://api.github.com/search/issues?q={_urlencode(q, safe='')}&per_page={limit}",
+            headers=_headers(),
+        )
+    except HttpError as exc:
+        if errors is not None:
+            errors.append(f"{cls}: {type(exc).__name__}: {exc}")
+        log(f"读取 classification={cls} 台账失败：{type(exc).__name__}: {exc}")
+        return []
+    return [row_from_issue(it, meta_from_body(it.get("body") or "")) for it in (hits.get("items") or [])]
 
 
 def open_transient_failures(limit: int = 20) -> list[dict[str, Any]]:

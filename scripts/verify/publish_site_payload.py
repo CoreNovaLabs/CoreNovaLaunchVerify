@@ -17,14 +17,11 @@ import argparse
 import json
 import os
 import pathlib
-import sys
 from typing import Any
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-
-from corenova.backend import make_backend  # noqa: E402
-from corenova.config import Config  # noqa: E402
-from corenova.util import log  # noqa: E402
+from corenova.backend import make_backend
+from corenova.config import Config
+from corenova.util import log
 
 
 def build(cfg: Config, wanted: str) -> tuple[dict[str, Any], list[str]]:

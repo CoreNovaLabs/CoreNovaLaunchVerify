@@ -80,7 +80,7 @@ def render(manifest: dict[str, Any], tests_output: str = "", log_tail: str = "")
 <tr><th>Image (exact tag)</th><td><code>{html.escape(manifest['container']['image'])}</code></td></tr>
 <tr><th>Image digest (linux/amd64)</th><td><code>{html.escape(manifest['container']['digest'])}</code></td></tr>
 <tr><th>Index digest</th><td><code>{html.escape(manifest['container']['manifest_digest'])}</code></td></tr>
-<tr><th>Pulled as</th><td><code>{html.escape((ev.get('pull_ref') or ''))}</code> via <code>{html.escape(str(ev.get('registry_host')))}</code></td></tr>
+<tr><th>Pulled as</th><td><code>{html.escape(ev.get('pull_ref') or '')}</code> via <code>{html.escape(str(ev.get('registry_host')))}</code></td></tr>
 <tr><th>Platform contract</th><td><code>{html.escape(manifest['platform']['ami_id'])}</code> · {html.escape(manifest['platform']['region'])}/{html.escape(manifest['platform']['architecture'])} · source={html.escape(manifest['platform'].get('base_ami_source',''))} ({html.escape(manifest['platform']['platform_verification_id'])})</td></tr>
 <tr><th>Config revisions</th><td>app <code>{html.escape(manifest['config']['app_config_revision'][:12])}</code> · compose <code>{html.escape(manifest['config']['compose_revision'][:12])}</code></td></tr>
 <tr><th>Release type</th><td><code>{html.escape(manifest['website']['release']['type'])}</code> — {html.escape(manifest['website']['release']['type_evidence'])}</td></tr>

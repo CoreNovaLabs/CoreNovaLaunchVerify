@@ -9,13 +9,10 @@
 from __future__ import annotations
 
 import argparse
-import pathlib
 import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-
-from corenova import appspec  # noqa: E402
-from corenova.config import Config  # noqa: E402
+from corenova import appspec
+from corenova.config import Config
 
 
 def main() -> int:

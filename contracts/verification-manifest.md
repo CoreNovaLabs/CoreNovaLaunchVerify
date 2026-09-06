@@ -152,7 +152,6 @@
       { "en": "One-click CloudFormation deploy", "zh": "CloudFormation 一键部署" }
     ],
     "deploy": {
-      "launch_url": "https://ghost.us-east-1.corenovalaunch.app",
       "documentation_url": "https://docs.ghost.org",
       "regions": ["us-east-1"],
       "instance_type": "t3.small",

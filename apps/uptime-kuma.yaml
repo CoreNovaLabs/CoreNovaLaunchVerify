@@ -1,5 +1,5 @@
 # CoreNova Launch · 应用注册（App Schema 唯一事实源）
-# 契约：contracts/app-schema.md（校验规则见 §5，共 18 条）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 19 条）
 #
 # 关于 app_type 的选择说明：
 # Uptime Kuma 官方镜像开箱即用形态是内嵌 SQLite（2.x 首启向导默认选项即 SQLite），

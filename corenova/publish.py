@@ -17,10 +17,14 @@ from pathlib import Path
 from typing import Any
 
 from .manifest import CHECKS, report_url, screenshot_key
-from .util import log, parse_semver, sanitize_for_id, utcnow
+from .util import log, sanitize_for_id, utcnow
+from .versioning import semver_relation
 
 UPLOAD_CHECKS = ("screenshots_uploaded", "report_uploaded", "verification_manifest_uploaded")
 LOCAL_CHECKS = tuple(c for c in CHECKS if c not in UPLOAD_CHECKS)
+
+# 索引条件写（If-Match）失配后的重试次数：跨应用并发 P5 时重读-重合-重写。
+_INDEX_WRITE_ATTEMPTS = 5
 
 
 # --------------------------------------------------------------------------- current state
@@ -61,9 +65,9 @@ def may_update_current(
     if force:
         return True, f"force=true（{cur.get('app_version')} -> {candidate_version}）"
     cur_v, cur_run = str(cur.get("app_version") or ""), str(cur.get("verification_run_id") or "0")
-    a, b = parse_semver(candidate_version), parse_semver(cur_v)
-    if a and b and strategy in ("release_tag", "semver_latest"):
-        if a >= b:
+    rel = semver_relation(candidate_version, cur_v)
+    if rel and strategy in ("release_tag", "semver_latest"):
+        if rel in ("newer", "same"):
             return True, f"semver {candidate_version} >= 当前 {cur_v}"
         return False, f"拒绝回退：候选 {candidate_version} < 当前 {cur_v}"
     try:
@@ -92,6 +96,11 @@ def _strip_scratch(manifest: dict[str, Any]) -> dict[str, Any]:
 
 def _put_json(backend, key: str, payload: dict[str, Any]) -> None:
     backend.put(key, json.dumps(payload, ensure_ascii=False, indent=2).encode() + b"\n")
+
+
+def _put_json_if_match(backend, key: str, payload: dict[str, Any], etag: str | None) -> bool:
+    data = json.dumps(payload, ensure_ascii=False, indent=2).encode() + b"\n"
+    return backend.put_if_match(key, data, etag)
 
 
 def publish(
@@ -213,24 +222,23 @@ def publish(
         return result
     _put_json(backend, f"verified/{app}/current.json", serialize()["website"])
     _update_index(backend, app, manifest)
+    _update_versions_index(backend, app, manifest)
     result.current_written = True
     result.committed = True
     result.notes.extend(notes + [why])
     result.checks = dict(manifest["checks"])
-    log(f"PUBLISHED {vid} -> current.json + index.json（{why}）")
+    log(f"PUBLISHED {vid} -> current.json + index.json + versions/index.json（{why}）")
     return result
 
 
 def _update_index(backend, app: str, manifest: dict[str, Any]) -> None:
-    """verified/index.json — the website's only way to enumerate apps (§2.1)."""
+    """verified/index.json — the website's only way to enumerate apps (§2.1)。
+
+    跨应用读改写：CI 并发组只互斥同 app（verify-<app>），不同 app 的 P5 可能并行，
+    无条件 last-writer-wins 会丢条目。因此用条件写（If-Match ETag）：
+    失配即重读-重合-重写；连续冲突才让本次发布失败（宁可失败重触发，不可静默丢数据）。
+    """
     key = "verified/index.json"
-    raw = backend.get(key)
-    index: dict[str, Any] = {"schema_version": "1.0", "apps": []}
-    if raw:
-        try:
-            index = json.loads(raw)
-        except json.JSONDecodeError:
-            log(f"index.json 损坏 → 以空索引重建（{key}）")
     w = manifest["website"]
     entry = {
         "app": app,
@@ -240,12 +248,64 @@ def _update_index(backend, app: str, manifest: dict[str, Any]) -> None:
         "health": w["health"],
         "verified_at": manifest["verified_at"],
     }
-    index["apps"] = sorted(
-        [a for a in index.get("apps", []) if a.get("app") != app] + [entry],
-        key=lambda a: a["app"],
-    )
-    index["generated_at"] = utcnow()
-    _put_json(backend, key, index)
+    for attempt in range(1, _INDEX_WRITE_ATTEMPTS + 1):
+        raw, etag = backend.get_with_etag(key)
+        index: dict[str, Any] = {"schema_version": "1.0", "apps": []}
+        if raw:
+            try:
+                index = json.loads(raw)
+            except json.JSONDecodeError:
+                log(f"index.json 损坏 → 以空索引重建（{key}）")
+        index["apps"] = sorted(
+            [a for a in index.get("apps", []) if a.get("app") != app] + [entry],
+            key=lambda a: a["app"],
+        )
+        index["generated_at"] = utcnow()
+        if _put_json_if_match(backend, key, index, etag):
+            return
+        log(f"index.json 条件写冲突（第 {attempt}/{_INDEX_WRITE_ATTEMPTS} 次）→ 重读重合")
+    raise RuntimeError(f"index.json 条件写连续 {_INDEX_WRITE_ATTEMPTS} 次冲突：{key}")
+
+
+def _update_versions_index(backend, app: str, manifest: dict[str, Any]) -> None:
+    """verified/{app}/versions/index.json — 每应用版本清单（deployment-contract §2.2）。
+
+    索引按应用分键：同应用发布已被 CI 并发组（application-verify.yml 的 verify-<app>）
+    互斥，正常无竞争；条件写是纵深防御（本地并发 / 组保护失效时也不静默丢条目）。
+    只在 P5 提交点写入——未过提交门禁的版本留在 versions/{app_version}.json，但不进清单。
+    """
+    key = f"verified/{sanitize_for_id(app)}/versions/index.json"
+    entry = {
+        "app_version": manifest["app_version"],
+        "verification_id": manifest["verification_id"],
+        "status": manifest["website"]["status"],
+        "verified_at": manifest["verified_at"],
+    }
+    for attempt in range(1, _INDEX_WRITE_ATTEMPTS + 1):
+        raw, etag = backend.get_with_etag(key)
+        entries: list[dict[str, Any]] = []
+        if raw:
+            try:
+                loaded = json.loads(raw)
+                entries = list(loaded.get("versions", [])) if isinstance(loaded, dict) else []
+            except json.JSONDecodeError:
+                log(f"{key} 损坏 → 以空清单重建")
+        entries = [
+            e for e in entries
+            if isinstance(e, dict) and e.get("app_version") != manifest["app_version"]
+        ]
+        entries.append(entry)
+        entries.sort(key=lambda e: str(e.get("verified_at") or ""), reverse=True)
+        payload = {
+            "schema_version": "1.0",
+            "app": app,
+            "generated_at": utcnow(),
+            "versions": entries,
+        }
+        if _put_json_if_match(backend, key, payload, etag):
+            return
+        log(f"{key} 条件写冲突（第 {attempt}/{_INDEX_WRITE_ATTEMPTS} 次）→ 重读重合")
+    raise RuntimeError(f"{key} 条件写连续 {_INDEX_WRITE_ATTEMPTS} 次冲突")
 
 
 def _seq_of(vid: str) -> int:

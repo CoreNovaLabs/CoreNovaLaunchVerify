@@ -28,7 +28,7 @@ on:
         required: false
         default: false
       host_port:
-        description: "runner 本机映射端口（默认取 config/verify.yaml run.host_port）"
+        description: "runner 本机映射端口（默认取应用自身的 container_port）"
         required: false
         type: string
         default: ""
@@ -117,7 +117,7 @@ jobs:
       - name: Install Playwright chromium
         run: playwright install --with-deps chromium
 
-      # 契约校验前置：schema 不合法就别浪费一次 docker pull（app-schema §5 十五条）
+      # 契约校验前置：schema 不合法就别浪费一次 docker pull（app-schema §5 十九条）
       - name: Validate app schema
         run: python scripts/verify/validate_app_schema.py --app "${{ inputs.app_name }}"
 

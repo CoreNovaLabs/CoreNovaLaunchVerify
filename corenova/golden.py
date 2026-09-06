@@ -20,9 +20,10 @@ import re
 import shlex
 import socket
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import yaml
 
@@ -30,7 +31,8 @@ from . import platformref
 from .backend import Backend
 from .config import Config
 from .platformref import REVISION_KEYS
-from .util import log, utcnow, write_json
+from .util import log, poll_until, utcnow, write_json
+from .versioning import age_days
 
 SCHEMA_VERSION = "1.0"
 VALID = "valid"
@@ -120,7 +122,6 @@ class Canary:
     subnet_id: str = ""
     vpc_id: str = ""
     security_group_id: str = ""
-    launch_url: str = ""
 
 
 @dataclass
@@ -634,18 +635,54 @@ def _network_sg_errors(cfg: Config) -> list[str]:
     return problems
 
 
-HARDCODED_RE = re.compile(r"(ghost:\d|nginx:latest|alpine:latest|ubuntu:latest|:latest(?=[\"'\s\}]|$)|-p 80:80|-p 443:443|2368:2368)")
+# 平台级反模式（与具体应用无关）：漂移标签 :latest、裸写 80/443 的端口映射。
+# 应用镜像/端口痕迹不写死在这里 —— 由 app_hardcode_patterns() 从 apps/*.yaml 派生。
+GENERIC_HARDCODED_RE = re.compile(r"(:latest(?=[\"'\s\}]|$)|-p 80:80|-p 443:443)")
+
+
+def app_hardcode_patterns(root: Path) -> list[tuple[str, str, re.Pattern[str]]]:
+    """从 apps/*.yaml 派生每个应用的「镜像基名:数字」与「端口:端口」反模式。
+
+    新接入应用不需要修改 golden.py：模板里硬编码 louislam/uptime-kuma:1 或 3001:3001
+    时，本函数派生的模式照常命中。畸形注册文件直接跳过——schema 违规由
+    appspec.validate 报告，这里不重复报。
+    """
+    out: list[tuple[str, str, re.Pattern[str]]] = []
+    apps_dir = root / "apps"
+    if not apps_dir.is_dir():
+        return out
+    for path in sorted(apps_dir.glob("*.yaml")):
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            deploy = data.get("deploy") or {}
+            image = str(deploy.get("docker_image") or "").rsplit("/", 1)[-1]
+            port = int(deploy.get("container_port") or 0)
+        except Exception:  # noqa: BLE001
+            continue
+        if re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", image):
+            out.append((path.stem, image, re.compile(rf"{re.escape(image)}:\d")))
+        if port > 0:
+            out.append((path.stem, str(port), re.compile(rf"\b{port}:{port}\b")))
+    return out
 
 
 def _hardcoding_errors(cfg: Config) -> list[str]:
     """A template that hardcodes an image or a port silently verifies the wrong artifact."""
     problems: list[str] = []
+    app_patterns = app_hardcode_patterns(cfg.root)
     for name in ("app.yaml", "canary.yaml"):
         if not template_path(cfg, name).exists():
             continue
         text = template_path(cfg, name).read_text(encoding="utf-8")
-        for match in HARDCODED_RE.finditer(text):
+        for match in GENERIC_HARDCODED_RE.finditer(text):
             problems.append(f"{name}: 含硬编码镜像/端口痕迹 {match.group(1)!r}")
+        for app, label, pattern in app_patterns:
+            hit = pattern.search(text)
+            if hit:
+                problems.append(
+                    f"{name}: 含硬编码应用镜像/端口痕迹 {hit.group(0)!r}"
+                    f"（apps/{app}.yaml 的 {label} 必须经 init.env 注入）"
+                )
         try:
             tpl = load_template(cfg, name)
         except Exception:  # noqa: BLE001 - 解析失败已由模板循环报告
@@ -836,12 +873,12 @@ def _stack_status(aws: Aws, stack_name: str) -> str | None:
 
 
 def _wait_stack_gone(aws: Aws, stack_name: str, *, timeout_minutes: int) -> None:
-    deadline = time.time() + timeout_minutes * 60
-    while time.time() < deadline:
-        if _stack_status(aws, stack_name) is None:
-            return
-        time.sleep(10)
-    raise RuntimeError(f"栈 {stack_name} 未在 {timeout_minutes} 分钟内删除完成，请手动检查（残留资源=持续计费）")
+    if poll_until(
+        lambda: True if _stack_status(aws, stack_name) is None else None,
+        timeout_s=timeout_minutes * 60,
+        interval_s=10,
+    ) is None:
+        raise RuntimeError(f"栈 {stack_name} 未在 {timeout_minutes} 分钟内删除完成，请手动检查（残留资源=持续计费）")
 
 
 def deploy_canary(aws: Aws, stack_name: str, params: dict[str, str], *, create: bool) -> None:
@@ -917,35 +954,38 @@ def signal_received(aws: Aws, stack_name: str) -> tuple[bool, str]:
 
 def _wait_instance_ready(aws: Aws, stack_name: str, *, timeout_minutes: int) -> None:
     """等 Instance 资源 CREATE_COMPLETE（实例已起、user-data 开始跑），不要求整栈完成。"""
-    deadline = time.time() + timeout_minutes * 60
-    while time.time() < deadline:
+
+    def probe() -> bool | None:
         try:
             resources = aws.cfn.describe_stack_resources(StackName=stack_name)["StackResources"]
-        except Exception:  # noqa: BLE001
-            time.sleep(15)
-            continue
+        except Exception:  # noqa: BLE001 - 栈创建早期 describe 可能暂时失败
+            return None
         for res in resources:
             if res.get("ResourceType") == "AWS::EC2::Instance":
                 st = res.get("ResourceStatus", "")
                 if st == "CREATE_COMPLETE":
-                    return
+                    return True
                 if st.endswith("_FAILED") or st.startswith("ROLLBACK"):
                     raise RuntimeError(f"Instance 资源 {st}: {_stack_reason(aws, stack_name)}")
-        time.sleep(15)
-    raise TimeoutError(f"等待 Instance 就绪超时（{timeout_minutes} 分钟）")
+        return None
 
+    if poll_until(probe, timeout_s=timeout_minutes * 60, interval_s=15) is None:
+        raise TimeoutError(f"等待 Instance 就绪超时（{timeout_minutes} 分钟）")
 
 
 def _wait_stack(aws: Aws, stack_name: str, *, timeout_minutes: int) -> str:
-    deadline = time.time() + timeout_minutes * 60
-    while time.time() < deadline:
+    def probe() -> str | None:
         status = aws.cfn.describe_stacks(StackName=stack_name)["Stacks"][0]["StackStatus"]
         if status.endswith("_COMPLETE"):
             return status
         if status.endswith("_FAILED") or status.startswith("ROLLBACK"):
             raise RuntimeError(f"栈 {stack_name} 状态 {status}: {_stack_reason(aws, stack_name)}")
-        time.sleep(15)
-    raise TimeoutError(f"等待栈 {stack_name} 完成超时（{timeout_minutes} 分钟）")
+        return None
+
+    status = poll_until(probe, timeout_s=timeout_minutes * 60, interval_s=15)
+    if status is None:
+        raise TimeoutError(f"等待栈 {stack_name} 完成超时（{timeout_minutes} 分钟）")
+    return status
 
 
 def _stack_reason(aws: Aws, stack_name: str) -> str:
@@ -960,15 +1000,16 @@ def _stack_reason(aws: Aws, stack_name: str) -> str:
 
 
 def _wait_change_set(aws: Aws, name: str, stack_name: str, *, timeout_minutes: int = 5) -> None:
-    deadline = time.time() + timeout_minutes * 60
-    while time.time() < deadline:
+    def probe() -> bool | None:
         resp = aws.cfn.describe_change_set(StackName=stack_name, ChangeSetName=name)
         if resp.get("Status") == "CREATE_COMPLETE":
-            return
+            return True
         if resp.get("Status") in ("FAILED", "DELETE_COMPLETE"):
             raise RuntimeError(f"change-set 规划失败：{resp.get('StatusReason')}")
-        time.sleep(5)
-    raise TimeoutError(f"等待 change-set {name} 超时")
+        return None
+
+    if poll_until(probe, timeout_s=timeout_minutes * 60, interval_s=5) is None:
+        raise TimeoutError(f"等待 change-set {name} 超时")
 
 
 # --------------------------------------------------------------------------- probe plumbing
@@ -1009,19 +1050,16 @@ def ssm_run(aws: Aws, instance_id: str, script: str, *, timeout: int = 240) -> I
         inv.error = f"send_command 失败：{type(exc).__name__}: {exc}"
         return inv
 
-    deadline = time.time() + timeout + 60
-    while time.time() < deadline:
+    def probe() -> bool | None:
         try:
             got = aws.ssm.get_command_invocation(CommandId=command_id, InstanceId=instance_id)
         except Exception as exc:  # noqa: BLE001 - InvocationDoesNotExist while the agent catches up
             if "InvocationDoesNotExist" in type(exc).__name__ or "InvocationDoesNotExist" in str(exc):
-                time.sleep(3)
-                continue
+                return None
             inv.error = f"get_command_invocation 失败：{exc}"
-            return inv
+            return True
         if got.get("Status") in ("Pending", "InProgress", "Delayed", "Running"):
-            time.sleep(5)
-            continue
+            return None
         # 以 Status 为准：实测 get_command_invocation 成功时 ExitCode 可能为 None（成功看
         # Status/ResponseCode）。之前 `0 or -1` 的写法还会把 ExitCode==0 误判成 -1。
         _status = got.get("Status")
@@ -1033,8 +1071,12 @@ def ssm_run(aws: Aws, instance_id: str, script: str, *, timeout: int = 240) -> I
         else:
             inv.exit_code = int(_ec) if _ec is not None else 1
             inv.error = f"{_status} {got.get('StatusDetails', '')}"[:300]
-        return inv
-    inv.error = "等待 SSM 命令结果超时"
+        return True
+
+    # 轮询间隔统一 5s：原实现 InvocationDoesNotExist 分支 sleep(3)，与 5s 的差异只在
+    # 命令刚发出的头几秒，相对 timeout（默认 240s）可忽略。
+    if poll_until(probe, timeout_s=timeout + 60, interval_s=5) is None:
+        inv.error = "等待 SSM 命令结果超时"
     return inv
 
 
@@ -1112,9 +1154,10 @@ def _probe_cloudwatch(ctx: ProbeCtx) -> tuple[bool, str]:
     if inv.exit_code != 0 or "config-ok" not in inv.out:
         return False, inv.out[:200] or inv.error
     group = ctx.params.get("CloudWatchLogGroupName", "/corenova/canary")
-    deadline = time.time() + 180
     seen = ""
-    while time.time() < deadline:
+
+    def probe() -> tuple[bool, str] | None:
+        nonlocal seen
         try:
             streams = ctx.aws.logs.describe_log_streams(logGroupName=group, descending=True, limit=50).get("logStreams", [])
         except Exception as exc:  # noqa: BLE001
@@ -1123,8 +1166,10 @@ def _probe_cloudwatch(ctx: ProbeCtx) -> tuple[bool, str]:
         if any(int(s.get("lastEventTimestamp", 0) or 0) > 0 for s in mine):
             return True, f"日志组 {group} 内本实例 stream {len(mine)} 条且有事件"
         seen = f"日志组 {group} 存在但本实例尚无日志流（{len(streams)} 条流）"
-        time.sleep(20)
-    return False, seen
+        return None
+
+    result = poll_until(probe, timeout_s=180, interval_s=20)
+    return result if result is not None else (False, seen)
 
 
 def _probe_ebs(ctx: ProbeCtx) -> tuple[bool, str]:
@@ -1214,7 +1259,7 @@ def _tcp_blocked(host: str, port: int, *, timeout: float) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
             return False
-    except socket.timeout:
+    except TimeoutError:
         return True
     except OSError:
         # Refused/reset also proves "22 is unusable"; only a completed handshake is a violation.
@@ -1277,7 +1322,9 @@ def _probe_ec2_launched(ctx: ProbeCtx) -> tuple[bool, str]:
     # state 必须在循环内重读：CFN CREATE_COMPLETE 时 EC2 可能还是 pending，
     # 只在循环前读一次会把"10 秒后转 running"的实例误判为失败。
     state, sys_check = "unknown", "pending"
-    for _ in range(10):
+
+    def probe() -> bool | None:
+        nonlocal state, sys_check
         res = ctx.aws.ec2.describe_instances(InstanceIds=[ctx.canary.instance_id])[
             "Reservations"][0]["Instances"][0]
         state = (res.get("State") or {}).get("Name", "")
@@ -1286,8 +1333,10 @@ def _probe_ec2_launched(ctx: ProbeCtx) -> tuple[bool, str]:
         ).get("InstanceStatuses", [])
         sys_check = (statuses[0].get("SystemStatus") or {}).get("Status", "pending") if statuses else "pending"
         if state == "running" and sys_check == "ok":
-            break
-        time.sleep(12)
+            return True
+        return None
+
+    poll_until(probe, timeout_s=10 * 12, interval_s=12)
     return state == "running" and sys_check == "ok", f"state={state} system-status={sys_check}"
 
 
@@ -1444,20 +1493,11 @@ def check_drift(
             out.reasons.append(f"{key} 变更：契约 {recorded} != 当前 {now}")
 
     interval = int(contract.get("reverify_interval_days") or cfg.reverify_interval_days)
-    out.age_days = _age_days(str(contract.get("platform_verified_at", "")))
+    out.age_days = age_days(str(contract.get("platform_verified_at", "")))
     if out.age_days > interval:
         out.expired = True
         out.reasons.append(f"契约已超复验周期（{out.age_days:.1f} 天 > {interval} 天）")
     return out
-
-
-def _age_days(iso: str) -> float:
-    import calendar
-
-    try:
-        return max(0.0, (time.time() - calendar.timegm(time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ"))) / 86400.0)
-    except (ValueError, TypeError):
-        return 1e9
 
 
 # --------------------------------------------------------------------------- cleanup
@@ -1472,26 +1512,23 @@ def destroy_canary(aws: Aws, cfg: Config, stack_name: str, canary: Canary) -> tu
     except Exception as exc:  # noqa: BLE001
         return False, [f"delete_stack 失败：{type(exc).__name__}: {exc}"]
 
-    deadline = time.time() + 20 * 60
-    gone = False
-    while time.time() < deadline:
+    def probe() -> bool | None:
         try:
             stacks = aws.cfn.describe_stacks(StackName=stack_name)["Stacks"]
         except Exception as exc:  # noqa: BLE001
             if "does not exist" in str(exc):
-                gone = True
-                break
-            time.sleep(10)
-            continue
+                return True
+            return None
         status = stacks[0]["StackStatus"] if stacks else "DELETE_COMPLETE"
         if status == "DELETE_COMPLETE":
-            gone = True
-            break
+            return True
         if status == "DELETE_FAILED":
             notes.append(f"DELETE_FAILED：{_stack_reason(aws, stack_name)}")
-            break
-        time.sleep(10)
-    if not gone:
+            return False
+        return None
+
+    gone = poll_until(probe, timeout_s=20 * 60, interval_s=10)
+    if gone is not True:
         notes.append(f"栈 {stack_name} 未在时限内消失（残留 = 持续计费）")
 
     # The instance is the one resource that keeps billing even after a stack disappears.
@@ -1750,15 +1787,18 @@ def run(
 
 
 def _wait_for_ssm_ready(aws: Aws, instance_id: str, *, timeout_minutes: int) -> None:
-    deadline = time.time() + timeout_minutes * 60
     last = ""
-    while time.time() < deadline:
+
+    def probe() -> bool | None:
+        nonlocal last
         inv = ssm_run(aws, instance_id, "echo up", timeout=60)
         if inv.exit_code == 0:
-            return
+            return True
         last = inv.error
-        time.sleep(20)
-    raise TimeoutError(f"实例 {instance_id} 在 {timeout_minutes} 分钟内未通过 SSM 可达（{last}）")
+        return None
+
+    if poll_until(probe, timeout_s=timeout_minutes * 60, interval_s=20) is None:
+        raise TimeoutError(f"实例 {instance_id} 在 {timeout_minutes} 分钟内未通过 SSM 可达（{last}）")
 
 
 def _wait_for_signal(aws: Aws, instance_id: str, *, timeout_minutes: int) -> None:
@@ -1766,7 +1806,6 @@ def _wait_for_signal(aws: Aws, instance_id: str, *, timeout_minutes: int) -> Non
 
     CFN 的 WaitCondition 在本环境出现"信号 HTTP 200 但资源不翻转"的现象（见 README 已知问题），
     因此 cfn_signal_received 以"实例确实发出了 SUCCESS 信号"为准——这是可复核的事实。"""
-    deadline = time.time() + timeout_minutes * 60
     last = ""
     # 注意：`a && b` 只输出 b 的结果，判断必须基于最终输出（status 行），不能用前半段字样。
     script = (
@@ -1774,16 +1813,20 @@ def _wait_for_signal(aws: Aws, instance_id: str, *, timeout_minutes: int) -> Non
         'grep -o "status [A-Z]*" /var/log/corenova/signal.log | head -1; '
         'else echo NO-SIGNAL-YET; fi'
     )
-    while time.time() < deadline:
+
+    def probe() -> bool | None:
+        nonlocal last
         inv = ssm_run(aws, instance_id, script, timeout=60)
         out = (inv.out or "").strip()
         last = out or inv.error
         if "status SUCCESS" in out:
-            return
+            return True
         if "status FAILURE" in out:
             raise RuntimeError(f"cfn-signal 发出但状态为 FAILURE：{out}")
-        time.sleep(20)
-    raise TimeoutError(f"cfn-signal 未在 {timeout_minutes} 分钟内发出（{last}）")
+        return None
+
+    if poll_until(probe, timeout_s=timeout_minutes * 60, interval_s=20) is None:
+        raise TimeoutError(f"cfn-signal 未在 {timeout_minutes} 分钟内发出（{last}）")
 
 
 def _backend(cfg: Config) -> Backend:

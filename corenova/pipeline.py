@@ -16,19 +16,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import appspec, manifest as mf, platformref, publish, report, resolver, runtime, screenshots
+from . import appspec, platformref, publish, report, resolver, runtime, screenshots
+from . import manifest as mf
 from .appspec import AppSpec
 from .backend import make_backend
 from .config import Config
 from .failure import FailureRecord, classify, record_failure, resolve_failures
-from .util import die, http_request, log, run as sh, utcnow
-
-_GH_HEADERS = {
-    "Accept": "application/vnd.github+json",
-    "Content-Type": "application/json",
-    "User-Agent": "corenovalaunch-verify/1.0",
-    "X-GitHub-Api-Version": "2022-11-28",
-}
+from .gh import github_headers
+from .util import die, http_request, log, utcnow
+from .util import run as sh
 
 
 class StageError(RuntimeError):
@@ -181,7 +177,30 @@ def run_verification(
         _write_state(cfg, vid, manifest, summary)
         return summary
 
-    result = publish.publish(backend, cfg, manifest, shots_dir, html, force=force)
+    # PUBLISHING 的失败必须走与其它阶段相同的落账路径（state-machine §4/§7）：
+    # publish() 的索引条件写连续冲突会 raise，若让异常裸逃，state.json 与失败台账
+    # 都不产生，reverify-failed 也就看不见这次失败。
+    try:
+        result = publish.publish(backend, cfg, manifest, shots_dir, html, force=force)
+    except Exception as exc:  # noqa: BLE001
+        cls = classify("PUBLISHING", "publish_commit", exc)
+        rec = FailureRecord(
+            app=app, app_version=resolved.app_version, verification_id=manifest["verification_id"],
+            classification=cls, failed_stage="PUBLISHING", failed_check="publish_commit",
+            run_url=mf.workflow_run_url(run_id), detail=f"{type(exc).__name__}: {exc}",
+        )
+        record_failure(rec)
+        summary.update({
+            "verification_id": manifest["verification_id"],
+            "status": "FAILED",
+            "classification": cls,
+            "failed_check": "publish_commit",
+            "checks": manifest["checks"],
+            "notes": [f"PUBLISHING 中断（{type(exc).__name__}: {exc}）→ 未提交 current.json，"
+                      f"可经 scripts/verify/publish.py --vid {manifest['verification_id']} 补投"],
+        })
+        _write_state(cfg, vid, manifest, summary)
+        return summary
     summary["checks"] = manifest["checks"]
     summary["notes"] = result.notes
     summary["verification_id"] = manifest["verification_id"]
@@ -189,7 +208,7 @@ def run_verification(
     if result.current_written:
         # state-machine §7：发布成功即关闭该版本的历史失败台账
         resolve_failures(app, resolved.app_version, manifest["verification_id"])
-        _dispatch_site(cfg, manifest)
+        dispatch_site(cfg, manifest)
     else:
         rec = FailureRecord(
             app=app, app_version=resolved.app_version, verification_id=manifest["verification_id"],
@@ -271,7 +290,7 @@ def _run_pytest(spec: AppSpec, root: Path, env: runtime.Env, cfg: Config) -> tup
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
-def _dispatch_site(cfg: Config, manifest: dict[str, Any]) -> None:
+def dispatch_site(cfg: Config, manifest: dict[str, Any]) -> None:
     """repository_dispatch(verified-update) — a hint only; Repo A reads the data itself."""
     token = os.environ.get("REPO_A_PAT") or ""
     if not (cfg.site_repo and token):
@@ -289,7 +308,7 @@ def _dispatch_site(cfg: Config, manifest: dict[str, Any]) -> None:
         status, _, body = http_request(
             f"https://api.github.com/repos/{cfg.site_repo}/dispatches",
             method="POST",
-            headers={**_GH_HEADERS, "Authorization": f"Bearer {token}"},
+            headers=github_headers(token),
             data=payload,
         )
         log(f"dispatch verified-update → {cfg.site_repo} (HTTP {status})"
@@ -327,8 +346,10 @@ def main() -> None:
     except StageError as exc:
         cls = classify(exc.stage, exc.check, exc.err)
         log(f"FAILED ({cls}) {exc}")
+        # 早期失败没有 vid：幂等键必须带 app 维度，否则任何应用的任何 RESOLVED
+        # 失败都会 PATCH 到同一个历史 issue 上（state-machine §7 幂等键语义）。
         record_failure(FailureRecord(
-            app=args.app, app_version="unknown", verification_id="pre-verification",
+            app=args.app, app_version="unknown", verification_id=f"pre-verification-{args.app}",
             classification=cls, failed_stage=exc.stage, failed_check=exc.check, detail=str(exc.err),
         ))
         print(json.dumps({"status": "FAILED", "classification": cls, "stage": exc.stage,

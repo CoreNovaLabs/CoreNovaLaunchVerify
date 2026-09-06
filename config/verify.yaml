@@ -35,7 +35,8 @@ site_repo: CoreNovaLabs/CoreNovaLaunchWebsite
 
 # 验证运行参数
 run:
-  host_port: 2368                     # 本机发布端口（被占用时用 --host-port 覆盖）
+  # host_port 不设全局默认：本机端口默认回退各应用的 container_port（apps/*.yaml），
+  # 需要覆盖时用 application-verify 的 host_port 输入或 --host-port。
   pull_policy: always                 # 验证必须拉到与被解析 digest 一致的内容
   tests_timeout_seconds: 600
   playwright_timeout_seconds: 120

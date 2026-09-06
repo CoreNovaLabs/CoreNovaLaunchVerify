@@ -1,5 +1,5 @@
 # CoreNova Launch · 应用注册（App Schema 唯一事实源）
-# 契约：contracts/app-schema.md（校验规则见 §5，共 18 条）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 19 条）
 #
 # 关于 app_type 的选择说明（与 app-profiles.md §1 示例表的差异是有意为之）：
 # 示例表把 Ghost 归为 stateless_web（"状态在外部 DB"）。但 Ghost 官方镜像开箱即用形态是

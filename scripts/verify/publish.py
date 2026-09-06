@@ -4,10 +4,10 @@
     python scripts/verify/publish.py --vid ghost-v6.61.0-20260829-001
     python scripts/verify/publish.py --latest-failed-publish ghost --dry-run
 
-为什么需要它：`corenova/pipeline.py` 里 PUBLISHING 的失败路径**不写回 state.json**
-（见该文件的 `_write_state` 只在 VERIFIED/PUBLISHED/FAILED-on-local-checks 时落盘），
-所以“P1–P4 中断”的现场只能靠已有产物重建。本脚本据此把缺口显式化，并在任何写入前
-先跑 P0 前置门禁——绝不因为"有人在补投"就绕过门禁。
+与 pipeline 的关系：`run_verification` 现已把 PUBLISHING 的异常也落 state.json +
+失败台账（TRANSIENT），本脚本提供**不重跑验证**的补投路径——直接复用当时落盘的
+Manifest 与产物重走 P1..P5，并在任何写入前先跑 P0 前置门禁——绝不因为
+"有人在补投"就绕过门禁。
 
 退出码：0=PUBLISHED；1=未提交（版本覆盖保护/待人工）；2=P0 门禁不过或输入不可用；3=需要重建现场。
 
@@ -20,16 +20,13 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import sys
 from typing import Any
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-
-from corenova import publish  # noqa: E402
-from corenova.backend import make_backend  # noqa: E402
-from corenova.config import Config  # noqa: E402
-from corenova.manifest import CHECKS  # noqa: E402
-from corenova.util import log, utcnow  # noqa: E402
+from corenova import publish
+from corenova.backend import make_backend
+from corenova.config import Config
+from corenova.manifest import CHECKS
+from corenova.util import log, utcnow
 
 
 def load_manifest(cfg: Config, vid: str) -> dict[str, Any]:
@@ -176,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
             # 复用 pipeline 的实现，避免 dispatch payload 出现第二套形状
             from corenova import pipeline
 
-            pipeline._dispatch_site(cfg, manifest)
+            pipeline.dispatch_site(cfg, manifest)
             out["dispatch"] = "attempted"
         print(json.dumps(out, ensure_ascii=False, indent=2))
         return 0

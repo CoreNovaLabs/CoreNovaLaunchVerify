@@ -104,7 +104,7 @@ class Config:
         return self.verify.get("run") or {}
 
     @staticmethod
-    def load(root: Path | None = None) -> "Config":
+    def load(root: Path | None = None) -> Config:
         root = root or REPO_ROOT
         return Config(
             root=root,

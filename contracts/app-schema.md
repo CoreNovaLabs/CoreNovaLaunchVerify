@@ -101,7 +101,6 @@ tests:                                # required
 
 deployment:                           # required, 网站展示用的静态部署信息
   size: "small"                       # optional, enum；资源尺寸档，缺省取 app_type 的 default_size（app-profiles.md §3）；向上自由选，无需理由
-  launch_url_template: "https://{app}.{region}.corenovalaunch.app"  # optional, string
   documentation_url: "https://docs.ghost.org"  # optional, string
   regions: ["us-east-1"]              # required, string[]，支持部署的区域列表
   post_deploy:                        # optional, 部署后指引（网站详情页「部署速览/部署后指引」区块的唯一事实源）

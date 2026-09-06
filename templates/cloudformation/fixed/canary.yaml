@@ -64,13 +64,13 @@ Parameters:
     Type: String
     Default: ''
     AllowedPattern: ^$|^https?://\S+$
-    Description: 'Public URL of this deployment (deployment-contract.md deploy.launch_url). Injected into the container as CORENOVA_APP_URL so the app builds correct absolute links. Empty means "reachable through the instance public DNS name".
+    Description: 'Public URL of this deployment, supplied by the user at deploy time (the stack outputs ResolvedLaunchUrl when left empty). Injected into the container as CORENOVA_APP_URL so the app builds correct absolute links. Empty means "reachable through the instance public DNS name".
 
       '
   Hostnames:
     Type: CommaDelimitedList
     Default: ''
-    Description: 'Extra nginx server_name entries (e.g. ghost.us-east-1.corenovalaunch.app). A ''_'' catch-all is always kept, so access by public DNS keeps working before DNS points at the instance.
+    Description: 'Extra nginx server_name entries (e.g. app.example.com). A ''_'' catch-all is always kept, so access by public DNS keeps working before DNS points at the instance.
 
       '
   HealthCheckPath:

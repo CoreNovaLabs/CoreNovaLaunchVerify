@@ -13,8 +13,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .appspec import AppSpec, render_image_ref
+from .gh import github_headers, github_token
 from .profiles import RELEASE_TYPES
-from .util import HttpError, http_json, http_request, parse_semver, strip_v
+from .util import HttpError, http_json, http_request, parse_semver
 
 MANIFEST_ACCEPT = ",".join(
     [
@@ -33,15 +34,7 @@ SECURITY_RE = re.compile(r"CVE-\d{4}-\d{4,}|\bsecurity advis?ory\b|\bsecurity pa
 
 class GitHub:
     def __init__(self, token: str | None = None):
-        import os
-
-        self.headers = {
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
-        token = token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-        if token:
-            self.headers["Authorization"] = f"Bearer {token}"
+        self.headers = github_headers(token or github_token())
 
     def latest_release(self, repo: str) -> dict[str, Any]:
         return http_json(f"https://api.github.com/repos/{repo}/releases/latest", headers=self.headers)
@@ -71,7 +64,6 @@ class ResolvedVersion:
 def pick_release(spec: AppSpec, gh: GitHub | None = None, wanted: str | None = None) -> ResolvedVersion:
     """Resolve app_version per `source.version_strategy` (app-schema §4)."""
     gh = gh or GitHub()
-    filt = spec.g("source.release_filter") or {}
     strategy = spec.version_strategy
 
     if strategy == "pinned":

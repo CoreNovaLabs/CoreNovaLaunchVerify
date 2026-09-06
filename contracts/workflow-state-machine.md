@@ -13,10 +13,15 @@ DISCOVERED ─▶ RESOLVED ─▶ (DEPLOYING ─▶ DEPLOYED) ─▶ VERIFYING �
                                                           PUBLISHING ─▶ PUBLISHED
 
 任何 VERIFYING/PUBLISHING/DEPLOYING 失败 ─▶ FAILED
-FAILED ─┬─ TRANSIENT      ─▶ RETRY
-        ├─ AUTO_FIXABLE   ─▶ FIX_PR
-        └─ MANUAL_REQUIRED
+FAILED ─┬─ TRANSIENT        ─▶ RETRY（唯一可自动重试，最多 3 次指数退避）
+        ├─ APPLICATION      ─▶ FIX_PR 或 MANUAL_REQUIRED
+        ├─ TEST             ─▶ FIX_PR
+        ├─ INFRASTRUCTURE   ─▶ MANUAL_REQUIRED（基础设施不动）
+        └─ MANUAL_REQUIRED  ─▶ MANUAL_REQUIRED
 ```
+
+> 五个子分类与 `corenova/failure.py` 的 `ALL_CLASSIFICATIONS` 及本文 §4 表格一一对应，无第六种。
+> `FIX_PR` 不等于"自动修复"：修复 PR 由人工在流水线外发起（§6）。
 
 ## 2. 各状态定义
 
@@ -32,7 +37,7 @@ FAILED ─┬─ TRANSIENT      ─▶ RETRY
 | `PUBLISHED` | 已发布，网站事实源更新 | `current.json` 已更新 |
 | `FAILED` | 任一阶段失败，进入子分类 | issue / PR |
 | `RETRY` | 瞬时失败自动重试 | 重新进入 `VERIFYING` |
-| `FIX_PR` | AI 生成修复 PR，等待 review | PR |
+| `FIX_PR` | 等待修复 PR（由人工在流水线外发起，见 §6；流水线本身不连 AI） | PR |
 | `MANUAL_REQUIRED` | 需人工介入 | 标注 issue |
 
 ## 3. 两层状态机差异
@@ -58,12 +63,12 @@ DISCOVERED → RESOLVED → DEPLOYING → DEPLOYED → VERIFYING → VERIFIED �
 | 分类 | 示例 | 自动重试? | 动作 |
 |------|------|----------|------|
 | `TRANSIENT` | 网络超时、Docker pull 超时、GitHub API 失败、AWS 限流 | ✅（最多 3 次，指数退避） | `RETRY` |
-| `APPLICATION` | 容器启动失败、迁移失败、无效 app 配置 | ❌（除非 AUTO_FIXABLE） | `FIX_PR` 或 `MANUAL_REQUIRED` |
+| `APPLICATION` | 容器启动失败、迁移失败、无效 app 配置 | ❌ | `FIX_PR` 或 `MANUAL_REQUIRED` |
 | `TEST` | Playwright 断言失败、selector 变化 | ❌ | `FIX_PR` |
 | `INFRASTRUCTURE` | CFN 失败、AMI 失败、cfn-init 失败、Nginx 失败 | ❌（基础设施不动） | `MANUAL_REQUIRED` |
 | `MANUAL_REQUIRED` | 未知失败、安全敏感变更、AI 置信度不足 | ❌ | `MANUAL_REQUIRED` |
 
-**禁止对所有失败统一重试。** 只有 `TRANSIENT` 可自动 `RETRY`；其余进入 `FIX_PR`（应用/测试层，AI 可改测试）或 `MANUAL_REQUIRED`（基础设施/安全层，必须人工）。
+**禁止对所有失败统一重试。** 只有 `TRANSIENT` 可自动 `RETRY`；其余进入 `FIX_PR`（应用/测试层，人工在流水线外修改白名单内文件，默认 `apps/{app}/tests/**`，见 §6）或 `MANUAL_REQUIRED`（基础设施/安全层，必须人工）。
 
 ## 5. Concurrency（并发）
 

@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
-import copy
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -72,3 +72,53 @@ def test_inlined_assets_roundtrip(cfg=None):
     assert set(inlined) >= {"00-packages-and-docker-runtime.sh", "10-nginx-base.sh",
                             "40-ready-and-signal.sh"}
     assert golden.asset_drift(c) == []
+
+
+# ------------------------------------------------------------------ 硬编码反模式：应用模式派生
+
+
+def test_real_apps_derive_both_registrations():
+    """真实注册表（ghost + uptime-kuma）都派生出镜像与端口两组模式。"""
+    root = Path(__file__).resolve().parents[1]
+    labels = {label for _app, label, _p in golden.app_hardcode_patterns(root)}
+    assert {"ghost", "2368", "uptime-kuma", "3001"} <= labels
+
+
+def test_app_hardcode_patterns_derived_from_registry(tmp_path):
+    """镜像取最后路径段（registry/org 名不算），端口用 \b 防止撞进更长数字。"""
+    apps = tmp_path / "apps"
+    apps.mkdir()
+    (apps / "demo.yaml").write_text(
+        yaml.safe_dump({"deploy": {"docker_image": "example/demo-app", "container_port": 3001}}),
+        encoding="utf-8",
+    )
+    pats = {label: p for _app, label, p in golden.app_hardcode_patterns(tmp_path)}
+    assert pats["demo-app"].search("docker run demo-app:1.2.3")
+    assert not pats["demo-app"].search("image: example/demo-app")  # 无 :数字标签不算
+    assert pats["3001"].search("-p 3001:3001")
+    assert not pats["3001"].search("13001:30012")
+
+
+def test_app_hardcode_patterns_skip_malformed_registration(tmp_path):
+    """畸形注册文件跳过而不是崩溃：schema 违规由 appspec.validate 报告。"""
+    apps = tmp_path / "apps"
+    apps.mkdir()
+    (apps / "broken.yaml").write_text("deploy: [not, a, mapping]\n", encoding="utf-8")
+    (apps / "empty.yaml").write_text("app: {name: x}\n", encoding="utf-8")
+    assert golden.app_hardcode_patterns(tmp_path) == []
+
+
+def test_hardcoding_errors_catches_derived_app_pattern(tmp_path):
+    """模板硬编码了未写死在 golden.py 里的应用镜像/端口 → 派生模式照常命中。"""
+    (tmp_path / "apps").mkdir()
+    (tmp_path / "apps" / "demo.yaml").write_text(
+        "deploy:\n  docker_image: demo-app\n  container_port: 3001\n", encoding="utf-8"
+    )
+    tpl_dir = tmp_path / "templates" / "cloudformation" / "fixed"
+    tpl_dir.mkdir(parents=True)
+    (tpl_dir / "app.yaml").write_text(
+        "Resources:\n  X: docker run -d demo-app:1.2.3 -p 3001:3001\n", encoding="utf-8"
+    )
+    errs = golden._hardcoding_errors(SimpleNamespace(root=tmp_path))
+    assert any("demo-app:1" in e and "apps/demo.yaml" in e for e in errs), errs
+    assert any("3001:3001" in e for e in errs), errs

@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -204,3 +205,30 @@ def write_json(path: Path, payload: Any) -> None:
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------- polling
+
+
+def poll_until(
+    probe: Callable[[], Any],
+    *,
+    timeout_s: float,
+    interval_s: float,
+    clock: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Any:
+    """轮询直到 probe() 返回非 None（终值）或超时（返回 None）。
+
+    约定：probe 返回 None = 未就绪继续等；其他任何返回值（含 False）= 终值原样透传；
+    异常直接上抛——哪些异常算瞬时可吞、哪些必须立刻失败，由 probe 自己 try/except 决定。
+    超时不抛异常：各调用方的超时语义不同（RuntimeError / TimeoutError / 业务返回值），
+    由调用方检查 None 后自行包装。clock/sleep 可注入，测试用假时钟零等待复跑。
+    """
+    deadline = clock() + timeout_s
+    while clock() < deadline:
+        value = probe()
+        if value is not None:
+            return value
+        sleep(interval_s)
+    return None

@@ -14,12 +14,12 @@ must prove the reference is still trustworthy:
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .util import git_revision
+from .versioning import age_days
 
 REVISION_KEYS = (
     "cloudformation_revision",
@@ -79,18 +79,6 @@ def compute_revisions(cfg, base_ami_id: str = "") -> dict[str, str]:
     }
 
 
-def _age_days(iso: str) -> float:
-    import calendar
-
-    try:
-        # platform_verified_at 是 UTC（%...Z）；time.mktime 会按本地时区解释它，
-        # 非 UTC 机器上契约年龄会偏一个时区偏移，必须用 timegm（与 golden._age_days 同口径）。
-        t = time.strptime(iso, "%Y-%m-%dT%H:%M:%SZ")
-        return max(0.0, (time.time() - calendar.timegm(t)) / 86400.0)
-    except (ValueError, TypeError):
-        return 1e9
-
-
 def check(backend, cfg, spec, regions_required: list[str], check_drift: bool = True) -> ContractCheck:
     out = ContractCheck()
     key = contract_key(cfg.region, cfg.architecture)
@@ -104,7 +92,7 @@ def check(backend, cfg, spec, regions_required: list[str], check_drift: bool = T
     if c.get("status") != "valid":
         bad.append(f"status={c.get('status')!r} 非 valid")
     interval = int(c.get("reverify_interval_days") or cfg.reverify_interval_days)
-    if _age_days(c.get("platform_verified_at", "")) > interval:
+    if age_days(c.get("platform_verified_at", "")) > interval:
         bad.append(f"契约已超复验周期（{interval} 天）→ 需重跑 Golden Verification")
     if c.get("invalidated_reason"):
         bad.append(f"invalidated_reason={c['invalidated_reason']}")

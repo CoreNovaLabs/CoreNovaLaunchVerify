@@ -1,0 +1,51 @@
+# pr-checks.yml — PR 质量门禁（批量接入期防坏 schema / 回归混入）
+#
+# 六个既有工作流都是 dispatch/cron 触发，PR 不设防；批量注册应用的阶段恰恰是 PR 最多的
+# 阶段。这里跑的三个检查都是现成工具、hermetic（无 Docker/AWS/网络），分钟级完成：
+#   1. ruff check                     统一 lint（配置在 pyproject.toml，随 dev extra 安装）
+#   2. validate_app_schema.py --all   所有 apps/*.yaml 必须通过 19 条规则
+#   3. pytest tests -q                仓库测试套件（publish 门禁 / schema / golden 静态检查）
+name: pr-checks
+
+on:
+  pull_request:
+    paths:
+      - "apps/**"
+      - "corenova/**"
+      - "scripts/**"
+      - "tests/**"
+      - "contracts/**"
+      - "config/**"
+      - "templates/**"
+      - "pytest.ini"
+      - "pyproject.toml"
+      - "requirements.txt"
+      - ".github/workflows/pr-checks.yml"
+
+concurrency:
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  schema-and-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint (ruff — config in pyproject.toml)
+        run: ruff check corenova scripts tests apps
+
+      - name: App schema validation (all registrations)
+        run: python scripts/verify/validate_app_schema.py --all
+
+      - name: Test suite (hermetic — no Docker / AWS / network)
+        run: python -m pytest tests -q

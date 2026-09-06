@@ -16,7 +16,8 @@ CloudFormation 控制台原生支持该直链形态，点击即进创建向导�
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .util import http_request, log
 

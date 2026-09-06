@@ -10,11 +10,7 @@
 流程与硬规则：corenova/golden.py（verify-gate-design.md §5 / platform-contract.md §2/§5/§6）。
 退出码：0=契约 valid；2=探针未全通过（已写 invalid 契约）；3=流程异常；4=canary 清理未确认。
 """
-import pathlib
-import sys
-
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-from corenova.golden import main  # noqa: E402
+from corenova.golden import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

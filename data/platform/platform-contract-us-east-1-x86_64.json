@@ -1,15 +1,15 @@
 {
   "schema_version": "1.0",
-  "platform_verification_id": "plat-us-east-1-x86_64-20260903-001",
-  "ami_id": "ami-0d7f022123f8ff19d",
+  "platform_verification_id": "plat-us-east-1-x86_64-20260906-001",
+  "ami_id": "ami-025d99823a4caad37",
   "region": "us-east-1",
   "architecture": "x86_64",
-  "cloudformation_revision": "0364680c5046d9cf2e2038321a077b69aef6eed0",
-  "cfn_init_revision": "0364680c5046d9cf2e2038321a077b69aef6eed0",
-  "infrastructure_revision": "0364680c5046d9cf2e2038321a077b69aef6eed0",
-  "base_ami_revision": "public:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id@ami-0d7f022123f8ff19d",
+  "cloudformation_revision": "800e3ce60831b51d6072b7fc4c29cd1a16fdd62a",
+  "cfn_init_revision": "800e3ce60831b51d6072b7fc4c29cd1a16fdd62a",
+  "infrastructure_revision": "aa9e9abdf2e361f1c981091c11dc6756e2dae021",
+  "base_ami_revision": "public:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id@ami-025d99823a4caad37",
   "nginx_base_revision": "0364680c5046d9cf2e2038321a077b69aef6eed0",
-  "docker_runtime_revision": "0364680c5046d9cf2e2038321a077b69aef6eed0",
+  "docker_runtime_revision": "aa9e9abdf2e361f1c981091c11dc6756e2dae021",
   "verification": {
     "cfn_validated": true,
     "ec2_launched": true,
@@ -24,13 +24,13 @@
     "network_ok": true
   },
   "status": "valid",
-  "platform_verified_at": "2026-09-03T03:37:31Z",
+  "platform_verified_at": "2026-09-06T07:24:43Z",
   "invalidated_at": null,
   "invalidated_reason": null,
   "base_ami_source": "public",
   "source_ami_name": "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*",
   "source_ami_account": "0996389817",
   "source_ssm_parameter": "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id",
-  "ami_resolved_at": "2026-09-03T03:31:48Z",
+  "ami_resolved_at": "2026-09-06T07:17:52Z",
   "reverify_interval_days": 30
 }

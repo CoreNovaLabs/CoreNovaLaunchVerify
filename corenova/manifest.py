@@ -122,7 +122,6 @@ def build(
         "workflow_run_url": workflow_run_url(run_id),
         "screenshots_order": order,
         "deploy": {
-            "launch_url": spec.launch_url(region),
             "documentation_url": spec.g("deployment.documentation_url", ""),
             "regions": spec.g("deployment.regions") or [region],
             "instance_type": instance_type,

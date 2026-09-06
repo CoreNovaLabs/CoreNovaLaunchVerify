@@ -25,16 +25,15 @@ import json
 import os
 import pathlib
 import subprocess
-import sys
 import time
 from typing import Any
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-
-from corenova import appspec, publish, resolver  # noqa: E402
-from corenova.config import Config  # noqa: E402
-from corenova.failure import classify  # noqa: E402
-from corenova.util import log, parse_semver, utcnow  # noqa: E402
+from corenova import appspec, publish, resolver
+from corenova.config import Config
+from corenova.failure import classify
+from corenova.util import log, utcnow
+from corenova.versioning import relation as version_relation
+from corenova.versioning import semver_relation
 
 
 def ensure_gh_token() -> str:
@@ -61,22 +60,24 @@ def ensure_gh_token() -> str:
 
 
 def compare(candidate: str, current: str | None, strategy: str) -> dict[str, Any]:
-    """版本覆盖保护用的同一套 semver 口径（state-machine §5）：只认新于当前的 release。"""
-    if not current:
+    """版本覆盖保护用的同一套 semver 口径（state-machine §5）：只认新于当前的 release。
+
+    关系值由 corenova.versioning.relation 统一裁决（与 publish.may_update_current 同源），
+    这里只负责把关系映射成扇出决策。
+    """
+    rel = version_relation(candidate, current or "")
+    if rel == "initial":
         return {"decision": "dispatch", "reason": "尚无 current.json → 需首次验证", "relation": "initial"}
-    a, b = parse_semver(candidate), parse_semver(current)
-    if a and b:
-        if a > b:
-            return {"decision": "dispatch", "reason": f"{candidate} 新于已发布 {current}", "relation": "newer"}
-        if a == b:
-            return {"decision": "skip", "reason": f"{candidate} 已是当前发布版本", "relation": "same"}
+    if rel == "newer":
+        return {"decision": "dispatch", "reason": f"{candidate} 新于已发布 {current}", "relation": "newer"}
+    if rel == "same":
+        return {"decision": "skip", "reason": f"{candidate} 已是当前发布版本", "relation": "same"}
+    if rel == "older":
         return {
             "decision": "skip",
             "reason": f"{candidate} 旧于已发布 {current}（即使验证通过也不得覆盖 current.json）",
             "relation": "older",
         }
-    if candidate == current:
-        return {"decision": "skip", "reason": f"{candidate} 已是当前发布版本", "relation": "same"}
     # commit SHA / 日期标签无法用版本号裁决：交给 application-verify 的 run_id 覆盖保护，
     # 这里只做节流（见 up_to_date_within_window），不做"看起来不同就重跑"。
     return {
@@ -107,7 +108,7 @@ def up_to_date_within_window(release: dict[str, Any], hours: int) -> bool:
 
 
 def _both_semver(candidate: str, current: str) -> bool:
-    return bool(parse_semver(candidate)) and bool(parse_semver(current))
+    return semver_relation(candidate, current) is not None
 
 
 def is_durable(cfg: Config) -> bool:

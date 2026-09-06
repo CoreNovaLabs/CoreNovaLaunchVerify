@@ -28,6 +28,8 @@ class Env:
 
 def build_env(cfg, spec: AppSpec, image_pull_ref: str, image_display_ref: str, workdir: Path, host_port: int | None = None) -> Env:
     port = spec.container_port
+    # 端口优先级：CLI/workflow 覆盖 > config run.host_port > 应用自身 container_port。
+    # 不设全局默认端口（那会把某个应用的端口泄漏成所有应用的默认值）。
     hp = int(host_port or cfg.run_opts.get("host_port") or port)
     # 验证器与 Docker daemon 不一定同机（自托管 runner / 容器内跑验证 / 远程 daemon），
     # 因此"从哪里访问这个端口"必须可配置，不能写死 localhost。

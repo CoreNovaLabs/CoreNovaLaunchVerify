@@ -25,7 +25,9 @@ class Backend(Protocol):
 
     def exists(self, key: str) -> bool: ...
 
-    def delete(self, key: str) -> None: ...
+    def get_with_etag(self, key: str) -> tuple[bytes | None, str | None]: ...
+
+    def put_if_match(self, key: str, data: bytes, etag: str | None) -> bool: ...
 
 
 class DirBackend:
@@ -48,6 +50,21 @@ class DirBackend:
         p = self._p(key)
         return p.read_bytes() if p.exists() else None
 
+    def get_with_etag(self, key: str) -> tuple[bytes | None, str | None]:
+        data = self.get(key)
+        if data is None:
+            return None, None
+        # 本地无对象级 ETag，用内容哈希充当：与 R2 的 If-Match 语义一致（内容变即失配）。
+        import hashlib
+
+        return data, hashlib.sha256(data).hexdigest()
+
+    def put_if_match(self, key: str, data: bytes, etag: str | None) -> bool:
+        if etag is not None and self.get_with_etag(key)[1] != etag:
+            return False
+        self.put(key, data)
+        return True
+
     def put(self, key: str, data: bytes, content_type: str = "application/json") -> None:
         p = self._p(key)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -58,11 +75,6 @@ class DirBackend:
     def exists(self, key: str) -> bool:
         p = self._p(key)
         return p.exists() and p.stat().st_size > 0
-
-    def delete(self, key: str) -> None:
-        p = self._p(key)
-        if p.exists():
-            p.unlink()
 
     def mirror_from(self, src_dir: Path) -> None:
         """Import an existing fixtures tree (used by tests / re-runs)."""
@@ -106,6 +118,35 @@ class R2Backend:
                 return None
             raise
 
+    def get_with_etag(self, key: str) -> tuple[bytes | None, str | None]:
+        try:
+            resp = self.s3.get_object(Bucket=self.bucket, Key=key)
+            return resp["Body"].read(), (resp.get("ETag") or "").strip('"') or None
+        except Exception as exc:  # noqa: BLE001 - S3 surfaces 404 as ClientError
+            if "NoSuchKey" in type(exc).__name__ or "404" in str(exc):
+                return None, None
+            raise
+
+    def put_if_match(self, key: str, data: bytes, etag: str | None) -> bool:
+        """条件写（R2 支持 S3 If-Match / If-None-Match:*）。
+
+        返回 False 仅表示前置条件失配（对象已被并发方改写 / 已存在），
+        调用方应重读-重合-重试；其他错误照常抛出。
+        """
+        kwargs: dict = dict(Bucket=self.bucket, Key=key, Body=data,
+                            ContentType="application/json")
+        if etag is not None:
+            kwargs["IfMatch"] = f'"{etag}"'
+        else:
+            kwargs["IfNoneMatch"] = "*"  # 只允许首发，挡住两个首次写者都成功
+        try:
+            self.s3.put_object(**kwargs)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            if "PreconditionFailed" in type(exc).__name__ or "412" in str(exc) or "Conditional" in str(exc):
+                return False
+            raise
+
     def put(self, key: str, data: bytes, content_type: str = "application/json") -> None:
         self.s3.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type)
 
@@ -113,14 +154,13 @@ class R2Backend:
         try:
             self.s3.head_object(Bucket=self.bucket, Key=key)
             return True
-        except Exception:  # noqa: BLE001
-            return False
-
-    def delete(self, key: str) -> None:
-        try:
-            self.s3.delete_object(Bucket=self.bucket, Key=key)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001 - S3 surfaces 404 as ClientError
+            # 只把"对象不存在"当作 False；限流/网络错误必须上抛——
+            # exists() 是 P3 探测与 Publish Gate 复核的判据，瞬时故障被误判成
+            # "不存在"会把一次基础设施抖动报成门禁失败。
+            if "NoSuchKey" in type(exc).__name__ or "404" in str(exc) or "Not Found" in str(exc):
+                return False
+            raise
 
 
 def make_backend(cfg) -> Backend:

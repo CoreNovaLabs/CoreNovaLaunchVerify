@@ -15,7 +15,7 @@ R2 = Website Runtime Source of Truth
 - Repo A **禁止**把 Git 仓库里任何 `verified` 数据当作运行时事实源。
 - Git 中可保留审计副本，但**不能形成第二套网站事实源**。
 
-> **例外（非验证事实源）**：官网版本页展示的 GitHub Release Notes（`Repo A` 构建时缓存到 `data/{app}/releases.json`）属于**上游元数据同步**，从 GitHub API 拉取，**不进入** `current.json` / `versions/*.json`，也不属于"验证事实源"。它不构成第二套网站事实源——`verified/*/current.json` 仍是唯一验证事实源。Release Notes 缺失 / 限流时降级为空白或上次缓存，不影响验证状态展示。
+> **例外（非验证事实源）**：官网版本页展示的 GitHub Release Notes（`Repo A` 构建时缓存到 `data/{app}/releases.json`）属于**上游元数据同步**，从 GitHub API 拉取，**不进入** `current.json` / `versions/*.json`，也不属于"验证事实源"。它不构成第二套网站事实源——`verified/*/current.json` 仍是唯一验证事实源。Release Notes 缺失 / 限流时降级为空白或上次缓存，不影响验证状态展示。拉取所需的 `owner/repo` 读自 `verified/{app}/versions/*.json` 的 `release.source_repo`（验证事实源自带，verification-manifest.md §3），不读取 Repo C 工作区 `apps/`。
 
 ## 2. `current.json` 形状（= Manifest 的 website 投影）
 
@@ -50,7 +50,6 @@ R2 = Website Runtime Source of Truth
   "screenshots_order": ["home", "admin"],
 
   "deploy": {
-    "launch_url": "https://ghost.us-east-1.corenovalaunch.app",
     "documentation_url": "https://docs.ghost.org",
     "regions": ["us-east-1"],
     "instance_type": "t3.small",
@@ -112,6 +111,7 @@ R2 公共端点**不支持 ListObjects**，Repo A 无法自行发现有哪些 ap
 ### 2.2 版本记录过滤（`versions/*.json`）
 
 - 版本页读取 `verified/{app}/versions/*.json`（完整 Manifest，见 verification-manifest.md §3）。
+- **版本清单 `verified/{app}/versions/index.json`**（Repo C 在 P5 提交点写入）：`versions[]` 按 `verified_at` 倒序列出**曾通过提交门禁**的版本（`app_version` / `verification_id` / `status` / `verified_at`）。官网以该清单枚举版本记录；清单缺失或为空时回退到 `release.previous_version` 链回溯（旧数据兼容，链断裂即止，不猜测）。清单按应用分键，同应用发布由 CI 并发组互斥，不与全局 `index.json` 共享跨应用写竞争面。
 - **只渲染 `checks.*` 九项全 `true`** 的最终态记录；两阶段提交中断留下的占位记录（三项上传 check 为 `false`）不得出现在网站上，也不得由前端补写成通过。
 - 前端展示"测试报告"必须逐条映射 Manifest 的九个 check 名（见 §3.1），**禁止**自造 `Docker Build / API Test` 之类不存在的检查项。
 
@@ -148,7 +148,7 @@ Manifest: https://pub-xxxx.r2.dev/screenshots/ghost/v5.75.0/home.png
 
 | 网站展示项 | 来源字段 | 是否允许前端推断 |
 |-----------|---------|----------------|
-| Deploy 按钮链接 | `deploy.launch_url` | ❌ 必须来自 Manifest |
+| Deploy 按钮深链 | §2.4 构建期常量模板 URL + 已验证 `deploy.docker_image`（tag@digest 钉扎） | ❌ 镜像引用必须来自 Manifest；模板 URL 不得拼站点 origin / 自托管副本 |
 | one-click 深链 templateURL | 构建期常量（§2.4 公开 S3 直链） | ❌ 不得拼站点 origin / 自托管副本 |
 | 文档链接 | `deploy.documentation_url` | ❌ 必须来自 Manifest |
 | 支持区域 | `deploy.regions` | ❌ 必须来自 Manifest |

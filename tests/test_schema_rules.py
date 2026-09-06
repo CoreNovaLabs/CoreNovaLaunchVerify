@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from corenova import appspec
+from corenova import appspec, profiles
 from corenova.appspec import AppSpec
 
 BASE_APP = "ghost"
@@ -108,6 +108,19 @@ def errors(tmp_path: Path, mutate=None, compose: str = GOOD_COMPOSE) -> list[str
 
 def test_good_spec_passes(tmp_path):
     assert errors(tmp_path) == []
+
+
+def test_ladder_instances_are_all_ranked():
+    """LADDER ⊆ INSTANCE_ORDER：地板比较依赖 rank 已知，缺项会让规则 10 静默失效。"""
+    for sizes in profiles.LADDER.values():
+        for instance, _disk in sizes.values():
+            assert instance in profiles.INSTANCE_ORDER, instance
+
+
+def test_instance_rank_unknown_is_max_not_min():
+    # 未知规格不得小于任何地板（用户自带更大规格不阻断），但也不能负向放行已知小规格
+    assert profiles.instance_rank("m5.24xlarge") == len(profiles.INSTANCE_ORDER)
+    assert profiles.instance_rank("t3.nano") < profiles.instance_rank("t3.small")
 
 
 def test_rule4_mobile_tag_rejected(tmp_path):
@@ -321,10 +334,9 @@ def test_rule1_name_must_match_filename(tmp_path):
     assert any("规则1" in e for e in errors(tmp_path, m))
 
 
-def test_launch_url_and_resources_derive(tmp_path):
+def test_resources_derive(tmp_path):
     spec = make(tmp_path)
     assert spec.resources() == ("t3.small", 30)
-    assert spec.launch_url("us-east-1") == "https://ghost.us-east-1.corenovalaunch.app"
 
 
 @pytest.mark.parametrize("tpl,expect", [

@@ -124,7 +124,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f scripts/verify/golden_verify.py ]; then
-            echo "::error::scripts/verify/golden_verify.py 尚未落地（Platform Verification 实现未完成）"
+            echo "::error::scripts/verify/golden_verify.py 缺失（应为本仓薄封装入口，指向 corenova/golden.py）"
             exit 1
           fi
           ARGS=()

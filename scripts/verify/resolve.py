@@ -11,13 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import sys
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
-
-from corenova import appspec, resolver  # noqa: E402
-from corenova.appspec import render_image_ref  # noqa: E402
-from corenova.config import Config  # noqa: E402
+from corenova import appspec, resolver
+from corenova.appspec import render_image_ref
+from corenova.config import Config
 
 
 def main(kind: str) -> int:

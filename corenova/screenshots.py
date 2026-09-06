@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .appspec import AppSpec
 from .util import log
@@ -35,7 +36,9 @@ def capture(spec: AppSpec, root: Path, base_url: str, out_dir: Path, timeout_ms:
                 prepare(page, slug)
             page.wait_for_timeout(500)
             target = out_dir / f"{slug}.png"
-            page.screenshot(path=str(target), full_page=True)
+            # 视口尺寸而非 full_page：full_page 让截图高度随页面内容变化（矮页面 1440x900、
+            # 高页面 1440x1513），官网截图卡是固定 16:10，非 16:10 的图会被 contain 留出约四成空白。
+            page.screenshot(path=str(target), full_page=False)
             results.append({"slug": slug, "file": target.name, "caption": s.get("caption") or {}})
             log(f"截图 {slug} -> {target.name} ({target.stat().st_size} bytes)")
         context.close()

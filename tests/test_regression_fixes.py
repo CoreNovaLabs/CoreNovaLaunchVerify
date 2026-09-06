@@ -3,7 +3,7 @@
 每个测试类对应一个具体修复：回滚任何一处修复，这里必须立刻变红。
 - TestClassifyRouting       → failure.classify 的路由顺序（H2）
 - TestThrottleWindow        → check_versions.up_to_date_within_window 符号与时区（M2）
-- TestPlatformRefAgeDays    → platformref._age_days 的 UTC 口径（M1）
+- TestAgeDays              → versioning.age_days 的 UTC 口径（M1）
 - TestAssertVersionContract → runtime.assert_version 与校验器规则12 的字段一致性（H1）
 - TestAppspecMalformedShapes→ appspec.validate 对畸形形状报违规而不是崩溃（M5）
 - TestIdSanitization        → sanitize_for_id / DirBackend 的路径穿越防线（M8）
@@ -29,10 +29,9 @@ from corenova import appspec  # noqa: E402
 from corenova.appspec import AppSpec  # noqa: E402
 from corenova.backend import DirBackend  # noqa: E402
 from corenova.failure import classify  # noqa: E402
-from corenova.platformref import _age_days  # noqa: E402
 from corenova.runtime import assert_version  # noqa: E402
 from corenova.util import sanitize_for_id  # noqa: E402
-
+from corenova.versioning import age_days  # noqa: E402
 from tests.test_schema_rules import make as make_spec  # noqa: E402
 
 
@@ -141,18 +140,18 @@ class TestThrottleWindow:
 # ------------------------------------------------------------------ M1: 契约年龄时区
 
 
-class TestPlatformRefAgeDays:
+class TestAgeDays:
     def test_age_computed_in_utc(self, tz_offset):
         two_days_ago = _utc_iso(2 * 86400)
         # 修复前 time.mktime 在 UTC+8 上会给出 ~1.67 天
-        assert abs(_age_days(two_days_ago) - 2.0) < 0.1
+        assert abs(age_days(two_days_ago) - 2.0) < 0.1
 
     def test_future_clamps_to_zero(self):
-        assert _age_days(_utc_iso(-3600)) == 0.0
+        assert age_days(_utc_iso(-3600)) == 0.0
 
     def test_malformed_is_huge(self):
-        assert _age_days("not-a-date") == 1e9
-        assert _age_days("") == 1e9
+        assert age_days("not-a-date") == 1e9
+        assert age_days("") == 1e9
 
 
 # ------------------------------------------------------------------ H1: assert_version 契约一致性
@@ -373,11 +372,11 @@ class TestResolveFailures:
         assert calls == []
 
     def test_meta_of_malformed_block(self):
-        from corenova.failure import _meta_of
+        from corenova.failure import meta_from_body
 
-        assert _meta_of("```corenova-failure\n{not json}\n```") == {}
-        assert _meta_of("没有块的正文") == {}
-        assert _meta_of(_ledger_body("v1", "vid-1"))["app_version"] == "v1"
+        assert meta_from_body("```corenova-failure\n{not json}\n```") == {}
+        assert meta_from_body("没有块的正文") == {}
+        assert meta_from_body(_ledger_body("v1", "vid-1"))["app_version"] == "v1"
 
 
 class TestLogGoesToStderr:

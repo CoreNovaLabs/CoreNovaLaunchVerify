@@ -27,6 +27,11 @@ TYPES: dict[str, tuple[str, str, str, bool, int]] = {
 
 SIZE_ORDER = ["small", "medium", "large", "xlarge"]
 
+# 实例规格全序（app-schema 规则 10 的地板比较用）。LADDER 里出现的每个实例类型
+# 都必须列在这里：缺项会让 instance_rank 把已知规格当未知（返回最大值），
+# 地板比较从此永远通过，规则 10 静默失效（由测试 test_ladder_instances_are_all_ranked 锁定）。
+INSTANCE_ORDER = ["t3.nano", "t3.micro", "t3.small", "t3.medium", "t3.large", "t3.xlarge", "t3.2xlarge"]
+
 CATEGORIES = ["cms", "ai", "media", "devops", "productivity", "database", "auth", "automation", "other"]
 RELEASE_TYPES = ["initial", "new_version", "security_update", "bug_fix"]
 ASSERTION_KINDS = ["env", "label", "api_json_path", "header", "exec_command"]
@@ -35,6 +40,11 @@ VERSION_STRATEGIES = ["release_tag", "semver_latest", "git_branch", "pinned"]
 
 def rank(size: str) -> int:
     return SIZE_ORDER.index(size)
+
+
+def instance_rank(instance: str) -> int:
+    """未知规格排在末尾：视为"不小于任何地板"，不阻断用户自带更大规格。"""
+    return INSTANCE_ORDER.index(instance) if instance in INSTANCE_ORDER else len(INSTANCE_ORDER)
 
 
 def resolve_size(app_type: str, size: str | None) -> tuple[str, str, str]:
