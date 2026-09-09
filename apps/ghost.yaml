@@ -1,5 +1,5 @@
 # CoreNova Launch · 应用注册（App Schema 唯一事实源）
-# 契约：contracts/app-schema.md（校验规则见 §5，共 19 条）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 20 条）
 #
 # 关于 app_type 的选择说明（与 app-profiles.md §1 示例表的差异是有意为之）：
 # 示例表把 Ghost 归为 stateless_web（"状态在外部 DB"）。但 Ghost 官方镜像开箱即用形态是
@@ -83,18 +83,20 @@ deployment:
       en: "Open the admin path on first visit — the setup wizard walks you through creating the owner account. There are no preset credentials."
       zh: "首次打开后台地址会进入初始化向导，按步骤创建站长账户；没有预置账号密码。"
     notes:
-      - en: "Content is stored on the instance's data volume (/var/lib/ghost/content); back it up before terminating the instance."
-        zh: "内容保存在实例数据卷（/var/lib/ghost/content），终止实例前请先备份。"
+      - en: "Content is stored on a retained data volume (/var/lib/ghost/content). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "内容保存在保留数据卷（/var/lib/ghost/content）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
   # 月成本估算（app-schema.md §5 规则18）：人工核对的数字，不是前端算的——调价随注册文件版本化。
-  # 口径：t3.small 按需 730h ≈ $15.2 + 30GB gp3 ≈ $2.4（us-east-1）。
+  # 口径：t3.small 730h ≈ $15.2 + 50GB gp3 ≈ $4 + 公网 IPv4 ≈ $3.65（us-east-1）。
   cost_estimate:
-    monthly_usd: 18
+    monthly_usd: 23
     note:
-      en: "Verified default (t3.small + 30 GB gp3, us-east-1 on-demand): ~$15.2 instance + ~$2.4 storage per month. Your actual AWS bill applies."
-      zh: "按已验证默认配置估算（t3.small + 30GB gp3，us-east-1 按需计费）：实例约 $15.2/月 + 存储约 $2.4/月。以 AWS 实际账单为准。"
+      en: "Verified default in us-east-1: ~$15.2 t3.small + $4 for 20 GB root and 30 GB data gp3 + $3.65 public IPv4 per month. Data transfer, snapshots and CloudWatch usage are extra."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月，20GB 系统盘 + 30GB 数据盘 gp3 约 $4/月，公网 IPv4 约 $3.65/月；流量、快照和 CloudWatch 用量另计。"
   # 容器内数据路径（app-schema.md §5 规则19）：与 compose 文件的容器挂载目标一致，
   # 是 CFN DataContainerPath 参数的唯一真相源。
   data_path: "/var/lib/ghost/content"
+  # Ghost 生成绝对链接所需的原生环境变量；值在实例启动时按公开地址注入。
+  app_url_env_name: "url"
 
 website:
   featured: true

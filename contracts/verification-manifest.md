@@ -1,6 +1,7 @@
 # Contract · Verification Manifest（验证清单）
 
 > 优先级：**最高**。
+> 术语：本文沿用 Repo A / Repo B / Repo C 代号，分别指 `CoreNovaLaunchWebsite`（官网，本地目录 `website/`）、`CoreNovaLaunchAmi`（AMI 构建，引导期未落地）、`CoreNovaLaunchVerify`（验证枢纽）。
 > 适用：Repo C `CoreNovaLaunchVerify` 产出的验证记录，上传至 R2 `verified/{app}/current.json` 与 `verified/{app}/versions/{app_version}.json`。
 > 本文定义"验证了什么"的不可变记录格式。任何设计文档与之冲突，以本文为准。
 
@@ -155,8 +156,11 @@
       "documentation_url": "https://docs.ghost.org",
       "regions": ["us-east-1"],
       "instance_type": "t3.small",
+      "data_volume_gb": 30,
       "container_port": 2368,
+      "health_check_path": "/",
       "docker_image": "ghost:5.75.0-alpine",
+      "app_url_env_name": "url",
       "post_deploy": {
         "admin_path": "/ghost/",
         "admin_setup": {
@@ -169,10 +173,10 @@
         ]
       },
       "cost_estimate": {
-        "monthly_usd": 18,
+        "monthly_usd": 23,
         "note": {
-          "en": "Verified default (t3.small + 30 GB gp3, us-east-1 on-demand): ~$15.2 + ~$2.4 per month.",
-          "zh": "按已验证默认配置估算（t3.small + 30GB gp3，us-east-1 按需计费）：约 $15.2 + $2.4/月。"
+          "en": "Verified default: ~$15.2 t3.small + $4 for 50 GB gp3 + $3.65 public IPv4 per month.",
+          "zh": "已验证默认配置：t3.small 约 $15.2 + 50GB gp3 约 $4 + 公网 IPv4 约 $3.65/月。"
         }
       },
       "data_path": "/var/lib/ghost/content"

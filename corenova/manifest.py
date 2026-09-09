@@ -79,7 +79,7 @@ def build(
 ) -> dict[str, Any]:
     verified_at = verified_at or utcnow()
     vid = vid or verification_id(spec.name, resolved.app_version)
-    instance_type, _disk = spec.resources()
+    instance_type, data_volume_gb = spec.resources()
     region = str(platform.get("region") or cfg.region)
 
     shots = [
@@ -125,7 +125,9 @@ def build(
             "documentation_url": spec.g("deployment.documentation_url", ""),
             "regions": spec.g("deployment.regions") or [region],
             "instance_type": instance_type,
+            "data_volume_gb": data_volume_gb,
             "container_port": spec.container_port,
+            "health_check_path": spec.g("health_check.endpoint", "/"),
             "docker_image": image.image_ref,
             "extra_environment": spec.g("deploy.extra_environment") or [],
         },
@@ -151,6 +153,12 @@ def build(
     dp = spec.g("deployment.data_path")
     if isinstance(dp, str) and dp:
         website["deploy"]["data_path"] = dp
+
+    # CloudFormation 在实例启动后才知道 PublicDnsName；应用只声明接收该地址的
+    # 原生环境变量名（例如 Ghost 的 `url`），通用模板不猜应用私有配置。
+    app_url_env_name = spec.g("deployment.app_url_env_name")
+    if isinstance(app_url_env_name, str) and app_url_env_name:
+        website["deploy"]["app_url_env_name"] = app_url_env_name
 
     manifest: dict[str, Any] = {
         "schema_version": "1.0",

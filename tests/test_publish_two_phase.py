@@ -68,6 +68,7 @@ def sample_manifest(**over) -> dict:
                  "url": "/screenshots/ghost/v6.61.0/home.png", "caption": {"en": "Home", "zh": "首页"}}],
             "deploy": {"docker_image": "ghost:6.61.0-alpine", "regions": ["us-east-1"],
                        "instance_type": "t3.small", "container_port": 2368,
+                       "data_volume_gb": 30, "health_check_path": "/",
                        "documentation_url": "https://ghost.org/docs/",
                        "post_deploy": {
                            "admin_path": "/ghost/",
@@ -78,7 +79,7 @@ def sample_manifest(**over) -> dict:
                        "cost_estimate": {"monthly_usd": 18,
                                          "note": {"en": "t3.small + 30 GB gp3.",
                                                   "zh": "t3.small + 30GB gp3。"}},
-                       "data_path": "/var/lib/ghost/content"},
+                       "data_path": "/var/lib/ghost/content", "app_url_env_name": "url"},
             "release": {"type": "initial", "previous_version": "", "type_evidence": "rule1"},
         },
     }
@@ -397,6 +398,23 @@ def test_data_path_key_absent_when_not_registered(tmp_path):
     spec = make_spec(tmp_path, lambda d: d["deployment"].__delitem__("data_path"))
     m = mf.build(spec, tmp_path, resolved, image, platform, outcome, Cfg(), "local-6")
     assert "data_path" not in m["website"]["deploy"]
+
+
+def test_deploy_runtime_contract_is_projected(tmp_path):
+    make_spec, resolved, image, platform, outcome = _build_inputs(tmp_path)
+    spec = make_spec(tmp_path)
+    m = mf.build(spec, tmp_path, resolved, image, platform, outcome, Cfg(), "local-7")
+    deploy = m["website"]["deploy"]
+    assert deploy["data_volume_gb"] == 30
+    assert deploy["health_check_path"] == "/"
+    assert deploy["app_url_env_name"] == "url"
+
+
+def test_app_url_env_name_absent_when_not_registered(tmp_path):
+    make_spec, resolved, image, platform, outcome = _build_inputs(tmp_path)
+    spec = make_spec(tmp_path, lambda d: d["deployment"].__delitem__("app_url_env_name"))
+    m = mf.build(spec, tmp_path, resolved, image, platform, outcome, Cfg(), "local-8")
+    assert "app_url_env_name" not in m["website"]["deploy"]
 
 
 def test_config_defaults_present(monkeypatch):

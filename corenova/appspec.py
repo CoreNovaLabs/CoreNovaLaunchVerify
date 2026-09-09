@@ -1,4 +1,4 @@
-"""Load `apps/{app}.yaml` and enforce app-schema.md §5 (19 rules) + app-profiles.md.
+"""Load `apps/{app}.yaml` and enforce app-schema.md §5 (20 rules) + app-profiles.md.
 
 The validator is deliberately self-contained: Repo C's CI must be able to reject a bad
 registration before any Docker / AWS / network work happens.
@@ -341,11 +341,24 @@ def validate(spec: AppSpec, root: Path, platform_region: str) -> list[str]:
     # 19 data_path：容器内数据挂载目录（CFN DataContainerPath 的真相源）。
     # 必须以 / 开头；含空格或 shell 元字符则拒绝——路径不得注入命令。
     dp = g("deployment.data_path")
-    if dp is not None:
+    if spec.app_type == "stateful_app" and dp is None:
+        e.append("规则19: stateful_app 必须声明 deployment.data_path")
+    elif dp is not None:
         if not isinstance(dp, str) or not dp.startswith("/"):
             e.append(f"规则19: deployment.data_path 必须以 / 开头的字符串，实为 {dp!r}")
         elif re.search(r"[\s;&|`$]", dp):
             e.append(f"规则19: deployment.data_path 含非法字符（空格或 shell 元字符）：{dp!r}")
+
+    # 20 应用原生 URL 环境变量名；值由模板按 LaunchUrl / PublicDnsName 生成。
+    app_url_env_name = g("deployment.app_url_env_name")
+    if app_url_env_name is not None and (
+        not isinstance(app_url_env_name, str)
+        or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", app_url_env_name)
+    ):
+        e.append(
+            "规则20: deployment.app_url_env_name 必须匹配 "
+            f"^[A-Za-z_][A-Za-z0-9_]*$，实为 {app_url_env_name!r}"
+        )
 
     # tests 目录
     tdir = g("tests.predefined_dir")

@@ -51,3 +51,26 @@ def test_merged_template_is_self_contained(tmp_path):
     assert "Ref: SubnetId" not in text
     assert "Ref: SecurityGroupId" not in text
     assert "NetworkStackName" not in text
+
+
+def test_user_interface_exposes_complete_verified_runtime_contract(tmp_path):
+    tpl = build(tmp_path)
+    groups = tpl["Metadata"]["AWS::CloudFormation::Interface"]["ParameterGroups"]
+    grouped = {parameter for group in groups for parameter in group["Parameters"]}
+    assert {
+        "AmiId",
+        "InstanceType",
+        "DataVolumeSize",
+        "DataContainerPath",
+        "HealthCheckPath",
+        "AppUrlEnvironmentName",
+        "ExtraEnvironment",
+    } <= grouped
+
+
+def test_one_click_template_requires_the_verified_ami(tmp_path):
+    tpl = build(tmp_path)
+    assert tpl["Parameters"]["AmiId"]["Type"] == "AWS::EC2::Image::Id"
+    assert "Default" not in tpl["Parameters"]["AmiId"]
+    assert tpl["Resources"]["Instance"]["Properties"]["ImageId"] == {"Ref": "AmiId"}
+    assert "UseSsmPublicAmi" not in tpl["Conditions"]

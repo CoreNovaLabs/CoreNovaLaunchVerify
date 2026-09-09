@@ -66,6 +66,7 @@ GOOD_SPEC: dict = {
             },
         },
         "data_path": "/var/lib/ghost/content",
+        "app_url_env_name": "url",
     },
     "website": {
         "featured": True,
@@ -320,9 +321,31 @@ def test_rule19_shell_chars_rejected(tmp_path):
     assert any("规则19" in e and "非法字符" in e for e in errors(tmp_path, m))
 
 
-def test_rule19_absent_is_fine(tmp_path):
+def test_rule19_stateful_app_requires_data_path(tmp_path):
     def m(d):
         del d["deployment"]["data_path"]
+
+    assert any("规则19" in e and "stateful_app" in e for e in errors(tmp_path, m))
+
+
+def test_rule19_absent_is_fine_for_stateless_app(tmp_path):
+    def m(d):
+        d["app"]["app_type"] = "stateless_web"
+        del d["deployment"]["data_path"]
+
+    assert errors(tmp_path, m) == []
+
+
+def test_rule20_app_url_env_name_must_be_safe_name(tmp_path):
+    def m(d):
+        d["deployment"]["app_url_env_name"] = "url; export BAD"
+
+    assert any("规则20" in e for e in errors(tmp_path, m))
+
+
+def test_rule20_app_url_env_name_is_optional(tmp_path):
+    def m(d):
+        del d["deployment"]["app_url_env_name"]
 
     assert errors(tmp_path, m) == []
 

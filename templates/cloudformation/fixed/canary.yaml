@@ -82,7 +82,7 @@ Parameters:
     Type: String
     Default: /var/lib/corenova/canary/data
     AllowedPattern: ^/[A-Za-z0-9._/-]*$
-    Description: Host directory bind-mounted read/write into the container as /data.
+    Description: Host directory bind-mounted read/write into the container at DataContainerPath.
   SmokeImage:
     Type: String
     Default: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
@@ -108,11 +108,19 @@ Parameters:
   DataContainerPath:
     Type: String
     Default: /data
+    AllowedPattern: ^/[A-Za-z0-9._/-]*$
     Description: 容器内的数据挂载点（Ghost 是 /var/lib/ghost/content，各应用不同，不能写死）。
+  AppUrlEnvironmentName:
+    Type: String
+    Default: ''
+    AllowedPattern: ^$|^[A-Za-z_][A-Za-z0-9_]*$
+    Description: 'Optional application-native environment variable that receives the resolved public URL (for example Ghost uses ''url''). Empty means the app needs no URL-specific variable.
+
+      '
   ExtraEnvironment:
     Type: String
     Default: ''
-    Description: 'Newline separated KEY=VALUE lines appended to the container environment file. App secrets belong here or in SSM Parameter Store, never inside ImageReference.
+    Description: 'Newline separated non-sensitive KEY=VALUE lines appended to the container environment file. Secrets must use SSM Parameter Store or Secrets Manager; CloudFormation parameters are visible.
 
       '
   InitOverrideUrl:
@@ -336,6 +344,8 @@ Resources:
 
                   export CFNOVA_APP_URL="${LaunchUrl}"
 
+                  export CFNOVA_APP_URL_ENV_NAME="${AppUrlEnvironmentName}"
+
                   export CFNOVA_HEALTH_PATH="${HealthCheckPath}"
 
                   export CFNOVA_SMOKE_IMAGE="${SmokeImage}"
@@ -394,7 +404,7 @@ Resources:
               owner: root
               group: root
             /opt/corenova/bin/30-app-container.sh:
-              content: "# BEGIN SYNCED ASSET 30-app-container.sh\n#!/bin/bash\n# cfn-init asset: renders the systemd unit that runs the application container.\n# Nothing about the app image or port is baked in - both arrive as CFN parameters, so the same\n# template verifies Ghost today and any other registered app tomorrow.\nset -xeuo pipefail\n\nAPP_NAME=\"${CFNOVA_APP_NAME:?}\"\nIMAGE_REFERENCE=\"${CFNOVA_IMAGE_REFERENCE:?}\"\nCONTAINER_PORT=\"${CFNOVA_CONTAINER_PORT:?}\"\nDATA_DIR=\"${CFNOVA_DATA_DIR:-/var/lib/corenova/app/data}\"\nDATA_MOUNT=\"${CFNOVA_DATA_CONTAINER_PATH:-/data}\"\nAPP_URL=\"${CFNOVA_APP_URL:-}\"\nEXTRA_ENV_FILE=\"${CFNOVA_EXTRA_ENV_FILE:-}\"\nLOG_GROUP=\"${CFNOVA_LOG_GROUP:-/corenova/apps}\"\nAWS_REGION=\"${CFNOVA_AWS_REGION:-us-east-1}\"\nHEALTH_PATH=\"${CFNOVA_HEALTH_PATH:-/}\"\nENV_FILE=\"/opt/corenova/env/${APP_NAME}.env\"\n\ninstall -d -m 0755 \"$DATA_DIR\"\nmkdir -p /opt/corenova/env\n\ncat > \"$ENV_FILE\" <<EOF\nCORENOVA_APP_IMAGE=${IMAGE_REFERENCE}\nCORENOVA_CONTAINER_PORT=${CONTAINER_PORT}\nCORENOVA_DATA_DIR=${DATA_DIR}\nCORENOVA_APP_URL=${APP_URL}\nEOF\nif [ -n \"$EXTRA_ENV_FILE\" ] && [ -s \"$EXTRA_ENV_FILE\" ]; then\n  cat \"$EXTRA_ENV_FILE\" >> \"$ENV_FILE\"\nfi\nchown root:corenova \"$ENV_FILE\"\nchmod 0640 \"$ENV_FILE\"\n\ncat > \"/etc/systemd/system/corenova-${APP_NAME}.service\" <<EOF\n[Unit]\nDescription=CoreNova application container (${APP_NAME})\nAfter=docker.service network-online.target\nRequires=docker.service\n\n[Service]\nType=simple\nRestart=always\nRestartSec=5\nEnvironmentFile=${ENV_FILE}\nExecStartPre=-/usr/bin/docker rm -f ${APP_NAME}\nExecStartPre=/usr/bin/docker pull ${IMAGE_REFERENCE}\nExecStart=/usr/bin/docker run --rm --name ${APP_NAME} \\\\\n  --label corenova.app=${APP_NAME} \\\\\n  --log-driver awslogs --log-opt awslogs-group=${LOG_GROUP} --log-opt awslogs-stream=${APP_NAME} --log-opt awslogs-region=${AWS_REGION} \\\\\n  --health-cmd \"curl -sf http://127.0.0.1:${CONTAINER_PORT}${HEALTH_PATH} || exit 1\" \\\\\n  --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 60s \\\\\n  --stop-timeout 30 \\\\\n  -p 127.0.0.1:${CONTAINER_PORT}:${CONTAINER_PORT} \\\\\n  -v ${DATA_DIR}:${DATA_MOUNT} \\\\\n  --env-file ${ENV_FILE} \\\\\n  ${IMAGE_REFERENCE}\nExecStop=/usr/bin/docker stop ${APP_NAME}\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\nsystemctl daemon-reload\nsystemctl enable \"corenova-${APP_NAME}\"\nsystemctl restart \"corenova-${APP_NAME}\"\nsleep 5\nsystemctl is-active \"corenova-${APP_NAME}\"\ndocker ps --filter \"name=^/${APP_NAME}$\" --format '{{.Names}} {{.Status}}'\n# END SYNCED ASSET 30-app-container.sh\n"
+              content: "# BEGIN SYNCED ASSET 30-app-container.sh\n#!/bin/bash\n# cfn-init asset: renders the systemd unit that runs the application container.\n# Nothing about the app image or port is baked in - both arrive as CFN parameters, so the same\n# template verifies Ghost today and any other registered app tomorrow.\nset -xeuo pipefail\n\nAPP_NAME=\"${CFNOVA_APP_NAME:?}\"\nIMAGE_REFERENCE=\"${CFNOVA_IMAGE_REFERENCE:?}\"\nCONTAINER_PORT=\"${CFNOVA_CONTAINER_PORT:?}\"\nDATA_DIR=\"${CFNOVA_DATA_DIR:-/var/lib/corenova/app/data}\"\nDATA_MOUNT=\"${CFNOVA_DATA_CONTAINER_PATH:-/data}\"\nAPP_URL=\"${CFNOVA_APP_URL:-}\"\nAPP_URL_ENV_NAME=\"${CFNOVA_APP_URL_ENV_NAME:-}\"\nEXTRA_ENV_FILE=\"${CFNOVA_EXTRA_ENV_FILE:-}\"\nLOG_GROUP=\"${CFNOVA_LOG_GROUP:-/corenova/apps}\"\nAWS_REGION=\"${CFNOVA_AWS_REGION:-us-east-1}\"\nENV_FILE=\"/opt/corenova/env/${APP_NAME}.env\"\n\n# LaunchUrl is optional because the instance public DNS name only exists after launch.\n# Resolve it through IMDSv2 so apps such as Ghost receive a correct absolute base URL.\nif [ -z \"$APP_URL\" ]; then\n  set +x\n  IMDS_TOKEN=\"$(curl -fsS -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token || true)\"\n  if [ -n \"$IMDS_TOKEN\" ]; then\n    PUBLIC_DNS=\"$(curl -fsS -H \"X-aws-ec2-metadata-token: ${IMDS_TOKEN}\" http://169.254.169.254/latest/meta-data/public-hostname || true)\"\n    if [ -n \"$PUBLIC_DNS\" ]; then\n      APP_URL=\"http://${PUBLIC_DNS}\"\n    fi\n  fi\n  set -x\nfi\n\ninstall -d -m 0755 \"$DATA_DIR\"\nmkdir -p /opt/corenova/env\n\ncat > \"$ENV_FILE\" <<EOF\nCORENOVA_APP_IMAGE=${IMAGE_REFERENCE}\nCORENOVA_CONTAINER_PORT=${CONTAINER_PORT}\nCORENOVA_DATA_DIR=${DATA_DIR}\nCORENOVA_APP_URL=${APP_URL}\nEOF\nif [ -n \"$APP_URL_ENV_NAME\" ] && [ -n \"$APP_URL\" ]; then\n  printf '%s=%s\\n' \"$APP_URL_ENV_NAME\" \"$APP_URL\" >> \"$ENV_FILE\"\nfi\nif [ -n \"$EXTRA_ENV_FILE\" ] && [ -s \"$EXTRA_ENV_FILE\" ]; then\n  cat \"$EXTRA_ENV_FILE\" >> \"$ENV_FILE\"\nfi\nchown root:corenova \"$ENV_FILE\"\nchmod 0640 \"$ENV_FILE\"\n\ncat > \"/etc/systemd/system/corenova-${APP_NAME}.service\" <<EOF\n[Unit]\nDescription=CoreNova application container (${APP_NAME})\nAfter=docker.service network-online.target\nRequires=docker.service\n\n[Service]\nType=simple\nRestart=always\nRestartSec=5\nEnvironmentFile=${ENV_FILE}\nExecStartPre=-/usr/bin/docker rm -f ${APP_NAME}\nExecStartPre=/usr/bin/docker pull ${IMAGE_REFERENCE}\nExecStart=/usr/bin/docker run --rm --name ${APP_NAME} \\\\\n  --label corenova.app=${APP_NAME} \\\\\n  --log-driver awslogs --log-opt awslogs-group=${LOG_GROUP} --log-opt awslogs-stream=${APP_NAME} --log-opt awslogs-region=${AWS_REGION} \\\\\n  --stop-timeout 30 \\\\\n  -p 127.0.0.1:${CONTAINER_PORT}:${CONTAINER_PORT} \\\\\n  -v ${DATA_DIR}:${DATA_MOUNT} \\\\\n  --env-file ${ENV_FILE} \\\\\n  ${IMAGE_REFERENCE}\nExecStop=/usr/bin/docker stop ${APP_NAME}\n\n[Install]\nWantedBy=multi-user.target\nEOF\n\nsystemctl daemon-reload\nsystemctl enable \"corenova-${APP_NAME}\"\nsystemctl restart \"corenova-${APP_NAME}\"\nsleep 5\nsystemctl is-active \"corenova-${APP_NAME}\"\ndocker ps --filter \"name=^/${APP_NAME}$\" --format '{{.Names}} {{.Status}}'\n# END SYNCED ASSET 30-app-container.sh\n"
               mode: '000755'
               owner: root
               group: root
@@ -439,6 +449,7 @@ Resources:
       SecurityGroupIds:
       - Ref: SecurityGroupId
       SourceDestCheck: true
+      PropagateTagsToVolumeOnCreation: true
       DisableApiTermination:
         Fn::If:
         - ProtectInstance

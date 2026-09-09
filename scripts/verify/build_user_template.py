@@ -4,9 +4,9 @@
 产出自包含模板：VPC/子网/SG + EC2 + cfn-init 装机 + 应用容器（镜像引用参数化）。
 - contracts/app-schema.md §7（单容器）、architecture.md §9（自助部署=用户自己账号）
 - platform-contract.md §8（SSM 运维，22 入站关闭，无 KeyPair）
-- AMI：默认用 AWS 公共 SSM 参数动态引用（Canonical Ubuntu 24.04，部署时解析最新）；
-  用户显式传 AmiId 时覆盖。动态引用只能出现在资源属性里，不能进 Parameter Default，
-  所以用反向 Condition（AmiId 为空）+ Fn::If 实现——同时避开 CFN 对 Fn::Not 的解析怪癖。
+- AMI：AmiId 必填，网站必须传入 Application Verification 所引用 Platform Contract 的
+  不可变 AMI id。one-click 模板不再回退到“部署时最新”的公共 SSM 参数，避免验证对象
+  与用户真正启动的主机漂移。
 
     python scripts/verify/build_user_template.py --out data/templates/corenova-one-click.template.yaml
     python scripts/verify/build_user_template.py --publish-s3   # 追加：发布到公开读桶（深链 URL 源）
@@ -29,12 +29,6 @@ FIXED = ROOT / "templates" / "cloudformation" / "fixed"
 # app.yaml 里这三个参数表达"挂到已有网络栈"；单栈模板由本模板自己的网络资源取代。
 DROP_PARAMS = ("SubnetId", "SecurityGroupId", "NetworkStackName")
 
-SSM_PUBLIC_AMI = (
-    "{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/"
-    "current/amd64/hvm/ebs-gp3/ami-id}}"
-)
-
-
 def build() -> dict:
     net = yaml.safe_load((FIXED / "network.yaml").read_text(encoding="utf-8"))
     app = yaml.safe_load((FIXED / "app.yaml").read_text(encoding="utf-8"))
@@ -43,9 +37,6 @@ def build() -> dict:
     for src in (net, app):
         for k, v in (src.get("Conditions") or {}).items():
             conditions[k] = copy.deepcopy(v)
-    # 反向条件：AmiId 留空 => ImageId 用 SSM 公共参数（CFN 对 Fn::Not 嵌套有解析怪癖）
-    conditions["UseSsmPublicAmi"] = {"Fn::Equals": [{"Ref": "AmiId"}, ""]}
-
     resources: dict = {}
     for name, spec in net["Resources"].items():
         resources[name] = copy.deepcopy(spec)
@@ -59,31 +50,12 @@ def build() -> dict:
         )
         resources[name] = yaml.safe_load(text)
 
-    # ImageId 走结构化替换：此前用按缩进匹配的文本替换（写死 10 空格），app.yaml
-    # 的 dump 缩进对不上时**静默失配** -> 模板残留裸 Ref: AmiId，深链不传 AmiId 时
-    # ImageId 为空串，RunInstances 报 "must contain the parameter ImageId"
-    # （2026-08-31 线上事故之二）。条件分支见上方 UseSsmPublicAmi。
-    for spec in resources.values():
-        props = (spec or {}).get("Properties") or {}
-        if isinstance(props.get("ImageId"), dict) and props["ImageId"].get("Ref") == "AmiId":
-            props["ImageId"] = {
-                "Fn::If": ["UseSsmPublicAmi", SSM_PUBLIC_AMI, {"Ref": "AmiId"}]
-            }
-
     parameters: dict = {}
     for src in (net, app):
         for k, v in src["Parameters"].items():
             if k in DROP_PARAMS:
                 continue
             v = copy.deepcopy(v)
-            if k == "AmiId":
-                # 放宽为 String：允许留空走动态引用（Image::Id 类型不允许空默认值）
-                v["Type"] = "String"
-                v["Default"] = ""
-                v["Description"] = (
-                    "Optional. Leave empty to use the latest Canonical Ubuntu 24.04 "
-                    "LTS AMI via the AWS public SSM parameter."
-                )
             if k == "TerminationProtection":
                 # 一键评估默认不锁定实例（用户可显式选 Enabled）；三栈生产模板保持 Enabled
                 v["Default"] = "Disabled"
@@ -121,9 +93,10 @@ def build() -> dict:
                 "ParameterGroups": [
                     {"Label": {"default": "Application"}, "Parameters": [
                         "AppName", "ImageReference", "ContainerPort", "HealthCheckPath",
+                        "DataContainerPath", "AppUrlEnvironmentName", "ExtraEnvironment",
                     ]},
                     {"Label": {"default": "Host"}, "Parameters": [
-                        "InstanceType", "DiskGb", "AmiId",
+                        "InstanceType", "DiskGb", "DataVolumeSize", "AmiId",
                     ]},
                 ],
                 "ParameterLabels": {
@@ -176,10 +149,12 @@ def main() -> int:
         if bad in text:
             print(f"FAIL: merged template still references {bad.strip()}")
             return 1
-    # 正向自检：ImageId 的 Fn::If 分支必须带着 SSM 公共参数动态引用进来
-    # （文本替换失配时它会静默消失，负向检查抓不住）。
-    if "resolve:ssm:" not in text:
-        print("FAIL: ImageId 丢失 SSM 公共 AMI 动态引用（UseSsmPublicAmi 分支未注入）")
+    # 正向自检：用户模板必须要求不可变 AmiId，并原样接到 EC2 ImageId。
+    if tpl["Parameters"].get("AmiId", {}).get("Type") != "AWS::EC2::Image::Id":
+        print("FAIL: AmiId 必须保持 AWS::EC2::Image::Id 必填参数")
+        return 1
+    if tpl["Resources"].get("Instance", {}).get("Properties", {}).get("ImageId") != {"Ref": "AmiId"}:
+        print("FAIL: EC2 ImageId 未直接引用已验证 AmiId")
         return 1
     print("rewire check: OK")
 

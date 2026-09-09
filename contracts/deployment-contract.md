@@ -1,6 +1,7 @@
 # Contract · Deployment Contract（网站数据契约）
 
 > 优先级：**最高**。
+> 术语：本文沿用 Repo A / Repo B / Repo C 代号，分别指 `CoreNovaLaunchWebsite`（官网，本地目录 `website/`）、`CoreNovaLaunchAmi`（AMI 构建，引导期未落地）、`CoreNovaLaunchVerify`（验证枢纽）。
 > 适用：Repo A `CoreNovaLaunchWebsite` 构建时消费的运行时数据。
 > 本文规定"网站只能从 Manifest 拿什么、不能自己猜什么"。任何设计文档与之冲突，以本文为准。
 
@@ -53,16 +54,19 @@ R2 = Website Runtime Source of Truth
     "documentation_url": "https://docs.ghost.org",
     "regions": ["us-east-1"],
     "instance_type": "t3.small",
+    "data_volume_gb": 30,
     "container_port": 2368,
+    "health_check_path": "/",
     "docker_image": "ghost:5.75.0-alpine",
+    "app_url_env_name": "url",
     "post_deploy": {
       "admin_path": "/ghost/",
       "admin_setup": { "en": "…setup wizard…", "zh": "…初始化向导…" },
       "notes": [ { "en": "…", "zh": "…" } ]
     },
     "cost_estimate": {
-      "monthly_usd": 18,
-      "note": { "en": "Verified default (t3.small + 30 GB gp3): ~$15.2 + ~$2.4/mo.", "zh": "按已验证默认配置估算：约 $15.2 + $2.4/月。" }
+      "monthly_usd": 23,
+      "note": { "en": "Verified default: ~$15.2 t3.small + $4 for 50 GB gp3 + $3.65 public IPv4/mo.", "zh": "已验证默认配置：t3.small 约 $15.2 + 50GB gp3 约 $4 + 公网 IPv4 约 $3.65/月。" }
     },
     "data_path": "/var/lib/ghost/content"
   },
@@ -143,6 +147,10 @@ Manifest: https://pub-xxxx.r2.dev/screenshots/ghost/v5.75.0/home.png
 - 模板 URL 是**基础设施配置**而非验证证据 -> **不进** `current.json` / Manifest；Repo A 以构建期常量引用
   （`src/lib/deploy.ts`，`VITE_ONE_CLICK_TEMPLATE_URL` 可覆盖），默认值必须与 Repo C `TEMPLATE_S3_BUCKET`
   指向同一只桶（repo-structure.md §4.4）。
+- 深链必须把当前记录的 `ami_id`、`deploy.instance_type`、`deploy.data_volume_gb`、
+  `deploy.data_path`、`deploy.health_check_path`、`deploy.app_url_env_name` 与 digest-pinned
+  `deploy.docker_image` 完整映射到 CloudFormation 参数。缺任一强制值时 Deploy 按钮必须禁用并提示
+  “需要重新验证”，不得退回模板默认值后仍称为已验证部署。
 
 ## 3. 字段来源约束（禁止前端猜测）
 
@@ -194,6 +202,9 @@ Manifest: https://pub-xxxx.r2.dev/screenshots/ghost/v5.75.0/home.png
 | 部署后指引（后台入口/首次登录方式/注意事项） | `deploy.post_deploy`（源 = app schema `deployment.post_deploy`，app-schema.md 规则17） | ❌ 必须来自 Manifest；无该键的应用前端只渲染平台通用步骤，不得自造后台路径或凭据提示 |
 | 部署区成本估算卡 | `deploy.cost_estimate`（源 = app schema `deployment.cost_estimate`，app-schema.md 规则18） | ❌ 数字与口径均来自 Manifest；前端不得按实例规格自行计算价格 |
 | 容器内数据路径 | `deploy.data_path`（源 = app schema `deployment.data_path`，app-schema.md 规则19） | ❌ 必须来自 Manifest；无该键的应用不显示数据路径，前端不得从 compose 文件推断 |
+| 数据卷容量 | `deploy.data_volume_gb`（源 = app profile / schema 资源解析） | ❌ 必须来自 Manifest；不得误传到系统盘 `DiskGb` |
+| 就绪探针路径 | `deploy.health_check_path`（源 = app schema `health_check.endpoint`） | ❌ 必须来自 Manifest；不得依赖模板默认 `/` |
+| 应用 URL 环境变量名 | `deploy.app_url_env_name`（源 = app schema `deployment.app_url_env_name`，规则20） | ❌ 必须来自 Manifest；无该键表示无需应用私有 URL 变量 |
 
 ## 4. `release.type` 枚举与数据化
 

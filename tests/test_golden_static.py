@@ -74,6 +74,30 @@ def test_inlined_assets_roundtrip(cfg=None):
     assert golden.asset_drift(c) == []
 
 
+def test_app_runtime_receives_resolved_url_without_image_curl_dependency():
+    tpl = yaml.safe_load((FIXTURES / "app.yaml").read_text(encoding="utf-8"))
+    assert "AppUrlEnvironmentName" in tpl["Parameters"]
+    init = tpl["Resources"]["Instance"]["Metadata"]["AWS::CloudFormation::Init"]
+    env_content = init["20-assets"]["files"]["/opt/corenova/etc/init.env"]["content"]
+    assert "CFNOVA_APP_URL_ENV_NAME" in str(env_content)
+    app_asset = golden.inlined_assets(SimpleNamespace(root=FIXTURES.parents[2]), "app.yaml")[
+        "30-app-container.sh"
+    ]
+    assert "latest/meta-data/public-hostname" in app_asset
+    assert "APP_URL_ENV_NAME" in app_asset
+    assert "--health-cmd" not in app_asset
+
+
+def test_retained_data_volume_is_discoverable_by_stack_tags():
+    tpl = yaml.safe_load((FIXTURES / "app.yaml").read_text(encoding="utf-8"))
+    props = tpl["Resources"]["Instance"]["Properties"]
+    assert props["PropagateTagsToVolumeOnCreation"] is True
+    data = next(
+        item for item in props["BlockDeviceMappings"] if item["DeviceName"] == "/dev/sdf"
+    )
+    assert data["Ebs"]["DeleteOnTermination"] is False
+
+
 # ------------------------------------------------------------------ 硬编码反模式：应用模式派生
 
 
