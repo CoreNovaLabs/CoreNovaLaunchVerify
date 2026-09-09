@@ -434,6 +434,41 @@ def test_as_cfn_parameters_is_sorted_key_value_pairs():
     ]
 
 
+def test_canary_parameters_scope_log_group_to_verification_id():
+    from corenova.config import Config
+
+    run_id = "plat-us-east-1-x86_64-20260909-001"
+    params = golden.canary_parameters(
+        Config.load(),
+        "ami-0123456789abcdef0",
+        {"SubnetIds": "subnet-123", "BaseSGId": "sg-123"},
+        run_id,
+    )
+
+    assert params["CloudWatchLogGroupName"] == f"/corenova/canary/{run_id}"
+
+
+def test_wait_change_set_includes_early_validation_detail(monkeypatch):
+    class CloudFormation:
+        def describe_change_set(self, **_kwargs):
+            return {"Status": "FAILED", "StatusReason": "Early Validation failed"}
+
+        def describe_events(self, **_kwargs):
+            return {
+                "OperationEvents": [
+                    {
+                        "LogicalResourceId": "AppLogGroup",
+                        "ValidationStatusReason": "Log group already exists.",
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(golden, "poll_until", lambda probe, **_kwargs: probe())
+
+    with pytest.raises(RuntimeError, match="AppLogGroup: Log group already exists"):
+        golden._wait_change_set(SimpleNamespace(cfn=CloudFormation()), "plan", "stack")
+
+
 def test_without_default_drops_only_default():
     spec = {"Type": "String", "Default": "x", "AllowedPattern": ".+"}
     assert golden._without_default(spec) == {"Type": "String", "AllowedPattern": ".+"}

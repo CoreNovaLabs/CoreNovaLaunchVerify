@@ -801,6 +801,11 @@ def canary_parameters(cfg: Config, ami_id: str, network: dict[str, str], run_id:
             "SecurityGroupId": network.get("BaseSGId", ""),
             "NetworkStackName": network_stack_name(cfg),
             "GoldenRunId": run_id,
+            # A fixed log-group name can outlive a previous canary when stack cleanup was
+            # interrupted, which makes CloudFormation Early Validation reject the next run.
+            # Scope it to the immutable verification id so a stale observability resource can
+            # never block platform verification (the successful stack still cleans this up).
+            "CloudWatchLogGroupName": f"{params['CloudWatchLogGroupName'].rstrip('/')}/{run_id}",
             "SignalTimeoutSeconds": str(signal_timeout_minutes(cfg) * 60),
             "SignalTimeoutIso": f"PT{signal_timeout_minutes(cfg)}M",
             "TerminationProtection": "Disabled",
@@ -1000,12 +1005,32 @@ def _stack_reason(aws: Aws, stack_name: str) -> str:
 
 
 def _wait_change_set(aws: Aws, name: str, stack_name: str, *, timeout_minutes: int = 5) -> None:
+    def failure_detail(fallback: str) -> str:
+        """Surface Early Validation's actionable event instead of its generic wrapper."""
+        try:
+            events = aws.cfn.describe_events(
+                StackName=stack_name,
+                ChangeSetName=name,
+                Filters={"FailedEvents": True},
+            ).get("OperationEvents", [])
+        except Exception:  # noqa: BLE001 - older botocore/accounts may not expose this API
+            return fallback
+
+        details = []
+        for event in events:
+            reason = event.get("ValidationStatusReason") or event.get("ResourceStatusReason")
+            if reason:
+                resource = event.get("LogicalResourceId") or event.get("ResourceType") or "validation"
+                details.append(f"{resource}: {reason}")
+        return f"{fallback} | {' | '.join(details)}" if details else fallback
+
     def probe() -> bool | None:
         resp = aws.cfn.describe_change_set(StackName=stack_name, ChangeSetName=name)
         if resp.get("Status") == "CREATE_COMPLETE":
             return True
         if resp.get("Status") in ("FAILED", "DELETE_COMPLETE"):
-            raise RuntimeError(f"change-set 规划失败：{resp.get('StatusReason')}")
+            reason = str(resp.get("StatusReason") or resp.get("Status"))
+            raise RuntimeError(f"change-set 规划失败：{failure_detail(reason)}")
         return None
 
     if poll_until(probe, timeout_s=timeout_minutes * 60, interval_s=5) is None:
