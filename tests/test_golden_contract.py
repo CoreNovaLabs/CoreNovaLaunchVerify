@@ -469,6 +469,53 @@ def test_wait_change_set_includes_early_validation_detail(monkeypatch):
         golden._wait_change_set(SimpleNamespace(cfn=CloudFormation()), "plan", "stack")
 
 
+def test_cleanup_canary_volumes_deletes_only_explicitly_tagged_volume(monkeypatch):
+    class Ec2:
+        def __init__(self):
+            self.deleted: list[str] = []
+
+        def describe_volumes(self, *, VolumeIds):
+            if VolumeIds[0] in self.deleted:
+                raise RuntimeError("InvalidVolume.NotFound: volume does not exist")
+            return {
+                "Volumes": [
+                    {
+                        "VolumeId": VolumeIds[0],
+                        "State": "available",
+                        "Tags": [{"Key": "corenova:billing", "Value": "canary-temporary"}],
+                    }
+                ]
+            }
+
+        def delete_volume(self, *, VolumeId):
+            self.deleted.append(VolumeId)
+
+    ec2 = Ec2()
+    monkeypatch.setattr(golden, "poll_until", lambda probe, **_kwargs: probe())
+
+    clean, notes = golden._cleanup_canary_volumes(SimpleNamespace(ec2=ec2), ["vol-canary"])
+
+    assert clean is True
+    assert ec2.deleted == ["vol-canary"]
+    assert notes == ["数据卷 vol-canary 已删除"]
+
+
+def test_cleanup_canary_volumes_refuses_unlabelled_volume(monkeypatch):
+    class Ec2:
+        def describe_volumes(self, *, VolumeIds):
+            return {"Volumes": [{"VolumeId": VolumeIds[0], "State": "available", "Tags": []}]}
+
+        def delete_volume(self, **_kwargs):
+            raise AssertionError("must not delete an unlabelled volume")
+
+    monkeypatch.setattr(golden, "poll_until", lambda probe, **_kwargs: probe())
+
+    clean, notes = golden._cleanup_canary_volumes(SimpleNamespace(ec2=Ec2()), ["vol-user"])
+
+    assert clean is False
+    assert notes == ["数据卷 vol-user 缺少 canary-temporary 标签，拒绝删除"]
+
+
 def test_without_default_drops_only_default():
     spec = {"Type": "String", "Default": "x", "AllowedPattern": ".+"}
     assert golden._without_default(spec) == {"Type": "String", "AllowedPattern": ".+"}

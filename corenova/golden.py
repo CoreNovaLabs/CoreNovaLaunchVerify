@@ -116,6 +116,7 @@ CANARY_DESCRIPTION = (
 class Canary:
     stack_name: str
     instance_id: str = ""
+    volume_ids: list[str] = field(default_factory=list)
     public_dns: str = ""
     public_ip: str = ""
     private_ip: str = ""
@@ -930,6 +931,11 @@ def read_canary(aws: Aws, stack_name: str) -> Canary:
             canary.vpc_id = res.get("VpcId", "")
             groups = res.get("SecurityGroups") or []
             canary.security_group_id = groups[0]["GroupId"] if groups else ""
+            canary.volume_ids = [
+                str(mapping["Ebs"]["VolumeId"])
+                for mapping in res.get("BlockDeviceMappings") or []
+                if (mapping.get("Ebs") or {}).get("VolumeId")
+            ]
         except Exception:  # noqa: BLE001
             pass
     return canary
@@ -1556,13 +1562,21 @@ def destroy_canary(aws: Aws, cfg: Config, stack_name: str, canary: Canary) -> tu
     if gone is not True:
         notes.append(f"栈 {stack_name} 未在时限内消失（残留 = 持续计费）")
 
-    # The instance is the one resource that keeps billing even after a stack disappears.
+    # The production template deliberately retains the application data volume. A canary uses
+    # that exact template, so stack deletion alone is not cleanup: delete only volumes captured
+    # from this instance and carrying the explicit canary-temporary billing tag.
     state = _instance_state(aws, canary.instance_id) if canary.instance_id else ""
     if state in ("pending", "running", "stopping"):
         notes.append(f"实例 {canary.instance_id} 仍处于 {state} —— 必须人工终止")
     else:
         notes.append(f"实例 {canary.instance_id or '?'} 已不存在（state={state or 'gone'}）")
-    clean = gone and not any(marker in n for n in notes for marker in ("必须人工终止", "DELETE_FAILED", "未在时限内消失", "delete_stack 失败"))
+    volumes_clean, volume_notes = _cleanup_canary_volumes(aws, canary.volume_ids)
+    notes.extend(volume_notes)
+    clean = gone and volumes_clean and not any(
+        marker in n
+        for n in notes
+        for marker in ("必须人工终止", "DELETE_FAILED", "未在时限内消失", "delete_stack 失败")
+    )
     return clean, notes
 
 
@@ -1572,6 +1586,74 @@ def _instance_state(aws: Aws, instance_id: str) -> str:
     except Exception:  # noqa: BLE001
         return ""
     return str((res.get("State") or {}).get("Name", ""))
+
+
+def _cleanup_canary_volumes(aws: Aws, volume_ids: list[str]) -> tuple[bool, list[str]]:
+    """Delete retained EBS volumes proven to belong to this temporary canary run."""
+    notes: list[str] = []
+    clean = True
+
+    def describe(volume_id: str) -> dict[str, Any] | None:
+        try:
+            volumes = aws.ec2.describe_volumes(VolumeIds=[volume_id]).get("Volumes", [])
+        except Exception as exc:  # noqa: BLE001 - NotFound proves the volume is gone
+            text = str(exc)
+            if "does not exist" in text or "InvalidVolume.NotFound" in text:
+                return None
+            raise
+        return volumes[0] if volumes else None
+
+    for volume_id in dict.fromkeys(volume_ids):
+        try:
+            volume = describe(volume_id)
+        except Exception as exc:  # noqa: BLE001
+            clean = False
+            notes.append(f"数据卷 {volume_id} 查询失败：{type(exc).__name__}: {exc}")
+            continue
+        if volume is None:
+            notes.append(f"数据卷 {volume_id} 已不存在")
+            continue
+
+        tags = {str(tag.get("Key")): str(tag.get("Value")) for tag in volume.get("Tags") or []}
+        if tags.get("corenova:billing") != "canary-temporary":
+            clean = False
+            notes.append(f"数据卷 {volume_id} 缺少 canary-temporary 标签，拒绝删除")
+            continue
+
+        def wait_detached(target: str = volume_id) -> str | None:
+            current = describe(target)
+            if current is None:
+                return "gone"
+            state = str(current.get("State") or "")
+            return state if state in ("available", "deleting") else None
+
+        try:
+            ready = poll_until(wait_detached, timeout_s=5 * 60, interval_s=5)
+            if ready == "gone":
+                notes.append(f"数据卷 {volume_id} 已不存在")
+                continue
+            if ready not in ("available", "deleting"):
+                clean = False
+                notes.append(f"数据卷 {volume_id} 未在时限内解除挂载，必须人工处理")
+                continue
+            if ready == "available":
+                aws.ec2.delete_volume(VolumeId=volume_id)
+            deleted = poll_until(
+                lambda target=volume_id: True if describe(target) is None else None,
+                timeout_s=5 * 60,
+                interval_s=5,
+            )
+        except Exception as exc:  # noqa: BLE001
+            clean = False
+            notes.append(f"数据卷 {volume_id} 删除失败：{type(exc).__name__}: {exc}")
+            continue
+        if deleted is True:
+            notes.append(f"数据卷 {volume_id} 已删除")
+        else:
+            clean = False
+            notes.append(f"数据卷 {volume_id} 未在时限内删除，必须人工处理")
+
+    return clean, notes
 
 
 # --------------------------------------------------------------------------- the 16 steps
