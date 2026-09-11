@@ -159,6 +159,12 @@ jobs:
           if [ -n "${FORCE_FLAG}" ]; then ARGS+=(--force); fi
           python scripts/verify/run_application_verify.py "${ARGS[@]}"
 
+      # 容器以自身用户（root/node/git/grafana 等）写 bind mount，runner 用户读不了，
+      # 后续诊断与 artifact 上传会 EACCES（gitea /data/ssh 0700 实测）。放开只读位。
+      - name: Make run artifacts readable (container-owned files)
+        if: always()
+        run: sudo chmod -R a+rX data/runs data/reports 2>/dev/null || true
+
       # 诊断只读、不改代码不开 PR（state-machine §6）：给人看的白名单化建议
       - name: Diagnose failure (rule-based, no AI call)
         if: failure()
