@@ -22,10 +22,23 @@ def test_healthz_ready(base_url):
 
 
 def test_editor_shell_served(base_url):
+    # CI 实测：n8n 首启要跑数十条 SQLite 迁移，期间 / 在 404("Cannot GET /")
+    # 与 200 之间闪断（healthz 先行），探针可能恰好命中 200 而 pytest 命中 404。
+    # 因此这里轮询等待外壳稳定，而不是单次请求定生死。
+    import time
+
     import requests
 
-    r = requests.get(base_url + "/", timeout=20)
-    assert r.status_code == 200, f"/ 返回 {r.status_code}"
-    # 实测 2.38.6 外壳：title 含 n8n，挂载点为 <div id="app">
-    assert "n8n" in r.text.lower(), "返回的不是 n8n 页面"
-    assert '<div id="app">' in r.text, "返回的不是 n8n 编辑器 SPA 外壳"
+    deadline = time.time() + 240
+    last_status = None
+    while time.time() < deadline:
+        try:
+            r = requests.get(base_url + "/", timeout=10)
+            last_status = r.status_code
+            if r.status_code == 200 and '<div id="app">' in r.text:
+                assert "n8n" in r.text.lower(), "返回的不是 n8n 页面"
+                return
+        except requests.RequestException:
+            pass
+        time.sleep(5)
+    raise AssertionError(f"n8n 编辑器外壳 240s 内未稳定可访问（最后状态 {last_status}）")
