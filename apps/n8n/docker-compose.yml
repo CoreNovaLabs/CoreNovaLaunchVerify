@@ -1,0 +1,21 @@
+# n8n · CoreNova 验证用 compose
+#
+# 单一事实源约束（contracts/app-schema.md §0）：
+#   - image 只用 ${CORENOVA_APP_IMAGE}（= 精确 tag@digest，由验证器注入）
+#   - 端口只用 ${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}
+#   - 数据挂载到本次验证独占的临时目录 ${CORENOVA_DATA_DIR}，跑完即弃
+#
+# 降级形态注释（app-schema §7）：官方镜像开箱即用形态内嵌 SQLite，无需 DB sidecar。
+# 实测：容器以 node 用户（uid 1000）运行，首启在 /home/node/.n8n 初始化 SQLite；
+# 关闭诊断遥测与个性化问卷，避免首次启动额外网络依赖。
+services:
+  n8n:
+    image: ${CORENOVA_APP_IMAGE}
+    restart: "no"
+    ports:
+      - "${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}"
+    environment:
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+    volumes:
+      - ${CORENOVA_DATA_DIR}:/home/node/.n8n

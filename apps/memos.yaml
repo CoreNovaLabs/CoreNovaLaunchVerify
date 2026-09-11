@@ -1,0 +1,91 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 20 条）
+#
+# 版本可观测性：/api/v1/workspace/profile 免鉴权返回实例信息，其中 version 字段
+# 形如 "v0.30.0"（实测 neosmemo/memos:0.30.0），api_json_path 取它。
+
+app:
+  name: "memos"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/memos.svg"
+  i18n:
+    en:
+      display_name: "Memos"
+      description: "Lightweight, self-hosted note-taking and knowledge base"
+    zh:
+      display_name: "Memos 笔记"
+      description: "轻量级自托管笔记与知识库"
+
+source:
+  repo: "usememos/memos"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "neosmemo/memos"
+  # 上游 tag v0.30.0 → Docker Hub tag 0.30.0（官方镜像 tag 无 v 前缀）
+  image_tag_template: "neosmemo/memos:{version_no_v}"
+  container_port: 5230
+  compose_file: "apps/memos/docker-compose.yml"
+  # Memos 开箱默认内嵌 SQLite（/var/opt/memos），无需注入应用私有 env
+
+health_check:
+  # /healthz 免鉴权存活探针，200 "OK."（实测 0.30.0）。
+  endpoint: "/healthz"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 180
+  version_assertion:
+    # 实测 0.30.0：/api/v1/workspace/profile 已不存在（404），
+    # 正确端点为 /api/v1/instance/profile，version 字段不带 v 前缀。
+    kind: "api_json_path"
+    path: "/api/v1/instance/profile"
+    json_pointer: "/version"
+    expected: "{version_no_v}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/memos/tests"
+  scenarios:
+    - slug: "auth"
+      url: "/"
+      caption:
+        en: "First-run admin setup"
+        zh: "首次运行管理员设置"
+
+deployment:
+  size: "small"
+  documentation_url: "https://usememos.com/docs"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "The first visit walks you to the sign-up page; the first registered account becomes the instance owner. There are no preset credentials."
+      zh: "首次访问进入注册页，注册的第一个账户即实例所有者；没有预置账号密码。"
+    notes:
+      - en: "Notes and attachments live on a retained data volume (/var/opt/memos). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "笔记与附件保存在保留数据卷（/var/opt/memos）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + $4 for 20 GB root and 30 GB data gp3 + $3.65 public IPv4 per month. Data transfer, snapshots and CloudWatch usage are extra."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月，20GB 系统盘 + 30GB 数据盘 gp3 约 $4/月，公网 IPv4 约 $3.65/月；流量、快照和 CloudWatch 用量另计。"
+  data_path: "/var/opt/memos"
+
+website:
+  featured: true
+  screenshots_order: ["auth"]
+  tags: ["notes", "knowledge-base", "journal"]
+  features:
+    - en: "Automated testing before each release"
+      zh: "每次发布前自动化测试"
+    - en: "Twitter-style quick capture with Markdown and visibility control"
+      zh: "类推特速记，支持 Markdown 与可见性控制"
+    - en: "Embedded SQLite storage, one-click CloudFormation deploy"
+      zh: "内置 SQLite 存储，CloudFormation 一键部署"

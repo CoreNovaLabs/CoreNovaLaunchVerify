@@ -1,0 +1,97 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 20 条）
+#
+# 关于 category 的选择说明：上游业务语义是 auth（密码管理），但官网当前只渲染
+# ai/cms/media/devops/productivity 五个分类页（website/src/data/categories.ts），
+# 按展示口径归入 productivity。
+#
+# 版本可观测性：/alive 只返回 "Ok" 无版本；容器内二进制 `/vaultwarden --version`
+# 输出 "vaultwarden 1.37.2"，第 2 列即版本号，exec_command 取它。
+# 上游 release tag（1.37.2）本身无 v 前缀，app_version 原样即 Docker tag。
+
+app:
+  name: "vaultwarden"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/vaultwarden.svg"
+  i18n:
+    en:
+      display_name: "Vaultwarden"
+      description: "Bitwarden-compatible password manager server in a single container"
+    zh:
+      display_name: "Vaultwarden 密码管理"
+      description: "Bitwarden 兼容的轻量密码管理服务端"
+
+source:
+  repo: "dani-garcia/vaultwarden"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "vaultwarden/server"
+  # 上游 release tag 1.37.2 → Docker Hub tag 1.37.2-alpine（实测存在）
+  image_tag_template: "vaultwarden/server:{version}-alpine"
+  container_port: 8220
+  compose_file: "apps/vaultwarden/docker-compose.yml"
+  extra_environment:
+    - "ROCKET_PORT=8220"
+
+health_check:
+  # /alive 是免鉴权存活探针，始终 200 "Ok"（实测 1.37.2）。
+  endpoint: "/alive"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 180
+  version_assertion:
+    kind: "exec_command"
+    # 实测 1.37.2 输出两行："Vaultwarden 1.37.2" + "Web-Vault 2026.7.0"；
+    # 运行期断言取 stdout 最后一行，故先 head -n 1 只留服务端版本行。
+    command: >-
+      /vaultwarden --version | head -n 1 | awk '{print $2}'
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/vaultwarden/tests"
+  scenarios:
+    - slug: "web-vault"
+      url: "/"
+      caption:
+        en: "Web vault"
+        zh: "网页密码库"
+
+deployment:
+  size: "small"
+  documentation_url: "https://github.com/dani-garcia/vaultwarden/wiki"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/admin"
+    admin_setup:
+      en: "The web vault at / is open for account registration by default; the first registered account is yours to use. The /admin panel is disabled by default — see the upstream wiki for how to enable it."
+      zh: "默认情况下 / 的网页密码库开放注册，你注册的第一个账户即可使用；/admin 管理面板默认关闭，启用方法见上游 Wiki。"
+    notes:
+      - en: "Encrypted vault data lives on a retained data volume (/data). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "加密后的密码库数据保存在保留数据卷（/data）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + $4 for 20 GB root and 30 GB data gp3 + $3.65 public IPv4 per month. Data transfer, snapshots and CloudWatch usage are extra."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月，20GB 系统盘 + 30GB 数据盘 gp3 约 $4/月，公网 IPv4 约 $3.65/月；流量、快照和 CloudWatch 用量另计。"
+  data_path: "/data"
+
+website:
+  featured: true
+  screenshots_order: ["web-vault"]
+  tags: ["password-manager", "bitwarden", "security"]
+  features:
+    - en: "Automated testing before each release"
+      zh: "每次发布前自动化测试"
+    - en: "Works with official Bitwarden apps on all platforms"
+      zh: "兼容全平台官方 Bitwarden 客户端"
+    - en: "Embedded SQLite storage, one-click CloudFormation deploy"
+      zh: "内置 SQLite 存储，CloudFormation 一键部署"

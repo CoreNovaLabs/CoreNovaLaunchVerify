@@ -28,6 +28,15 @@ MANIFEST_ACCEPT = ",".join(
 
 SECURITY_RE = re.compile(r"CVE-\d{4}-\d{4,}|\bsecurity advis?ory\b|\bsecurity patch|\bvulnerab", re.I)
 
+SEMVER_SEARCH = re.compile(r"v?(\d+)\.(\d+)\.(\d+)")
+
+
+def extract_semver(tag: str) -> tuple[int, int, int] | None:
+    """宽容版 semver 提取：允许 tag 带任意前缀/后缀（如 "n8n@2.38.6"、"release-v1.2.3"），
+    取 tag 中首个 X.Y.Z 片段；找不到返回 None。严格版见 util.parse_semver。"""
+    m = SEMVER_SEARCH.search(tag.strip())
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
 
 # --------------------------------------------------------------------------- GitHub
 
@@ -75,6 +84,21 @@ def pick_release(spec: AppSpec, gh: GitHub | None = None, wanted: str | None = N
         return ResolvedVersion(branch, branch, _safe_sha(gh, spec.source_repo, branch), "new_version",
                                f"strategy=git_branch: {branch} HEAD", "", "")
 
+    # semver_latest（app-schema §4）："从 tag 中取满足 semver 的最新稳定版"。
+    # 上游可能发布非版本号的最新 release（如 n8n 的 "stable"），因此不能只看
+    # /releases/latest —— 必须扫描 release 列表，在各 tag 中提取 semver 后取最高。
+    if strategy == "semver_latest" and not wanted:
+        scored: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+        for rel in _candidates(spec, gh):
+            tag = str(rel.get("tag_name") or "")
+            semver = extract_semver(tag)
+            if semver:
+                scored.append((semver, rel))
+        if not scored:
+            raise ValueError(f"上游 {spec.source_repo} 最近 30 个 release 中没有任何可解析 semver 的 tag")
+        best = max(scored, key=lambda pair: pair[0])[1]
+        return _to_resolved(spec, gh, best)
+
     if wanted:
         releases = [r for r in gh.releases(spec.source_repo, per_page=50) if r.get("tag_name") == wanted]
         if not releases:
@@ -117,7 +141,9 @@ def _safe_sha(gh: GitHub, repo: str, ref: str) -> str:
 def _to_resolved(spec: AppSpec, gh: GitHub, rel: dict[str, Any]) -> ResolvedVersion:
     tag = str(rel["tag_name"])
     body = f"{rel.get('name') or ''}\n{rel.get('body') or ''}"
-    semver = parse_semver(tag)
+    # 宽容提取：release_tag 策略下 tag 可能带前缀（如 n8n 的 "n8n@2.38.6"），
+    # 提取失败不阻塞 release_tag（app_version 原样使用 tag），只影响 semver 可比性。
+    semver = extract_semver(tag)
     app_version = tag if spec.version_strategy == "release_tag" else (
         f"v{semver[0]}.{semver[1]}.{semver[2]}" if semver else tag
     )

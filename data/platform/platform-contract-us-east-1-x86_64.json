@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0",
-  "platform_verification_id": "plat-us-east-1-x86_64-20260906-001",
+  "platform_verification_id": "plat-us-east-1-x86_64-20260911-001",
   "ami_id": "ami-025d99823a4caad37",
   "region": "us-east-1",
   "architecture": "x86_64",
-  "cloudformation_revision": "a68b3ac26f78a651fc79967e59bb774eb8a2aeec",
-  "cfn_init_revision": "800e3ce60831b51d6072b7fc4c29cd1a16fdd62a",
+  "cloudformation_revision": "42f3c1ffd6a2d7e7406debacb70cd9c1cb6e464b",
+  "cfn_init_revision": "42f3c1ffd6a2d7e7406debacb70cd9c1cb6e464b",
   "infrastructure_revision": "aa9e9abdf2e361f1c981091c11dc6756e2dae021",
   "base_ami_revision": "public:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id@ami-025d99823a4caad37",
   "nginx_base_revision": "0364680c5046d9cf2e2038321a077b69aef6eed0",
@@ -24,13 +24,13 @@
     "network_ok": true
   },
   "status": "valid",
-  "platform_verified_at": "2026-09-06T08:24:39Z",
+  "platform_verified_at": "2026-09-11T06:00:39Z",
   "invalidated_at": null,
   "invalidated_reason": null,
   "base_ami_source": "public",
   "source_ami_name": "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*",
   "source_ami_account": "0996389817",
   "source_ssm_parameter": "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id",
-  "ami_resolved_at": "2026-09-06T08:18:02Z",
+  "ami_resolved_at": "2026-09-11T05:54:25Z",
   "reverify_interval_days": 30
 }

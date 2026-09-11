@@ -1,0 +1,97 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 20 条）
+#
+# 降级形态注释（app-schema §7）：n8n 生产推荐 Postgres，但官方镜像开箱即用形态
+# 内嵌 SQLite（数据在 /home/node/.n8n），属 v1 单容器约束下可接受形态，特此标明。
+#
+# 版本策略：上游最新 release tag 形如 "n8n@2.38.6"（另有非版本的 "stable" tag），
+# release_tag 策略无法渲染合法镜像 tag，故用 semver_latest——resolver 会扫描
+# release 列表提取 semver 取最高（app-schema §4），得到 app_version=v2.38.6。
+#
+# 版本可观测性：容器内 `n8n --version` 输出裸版本号 "2.38.6"，exec_command 取它。
+
+app:
+  name: "n8n"
+  category: "devops"
+  app_type: "stateful_app"
+  icon: "/icons/n8n.svg"
+  i18n:
+    en:
+      display_name: "n8n"
+      description: "Workflow automation with 400+ integrations and AI nodes"
+    zh:
+      display_name: "n8n 工作流自动化"
+      description: "带 400+ 集成与 AI 节点的工作流自动化平台"
+
+source:
+  repo: "n8n-io/n8n"
+  version_strategy: "semver_latest"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "n8nio/n8n"
+  # app_version v2.38.6 → Docker Hub tag 2.38.6（官方镜像 tag 无 v 前缀）
+  image_tag_template: "n8nio/n8n:{version_no_v}"
+  container_port: 5678
+  compose_file: "apps/n8n/docker-compose.yml"
+  extra_environment:
+    - "N8N_DIAGNOSTICS_ENABLED=false"
+    - "N8N_PERSONALIZATION_ENABLED=false"
+
+health_check:
+  # /healthz 免鉴权存活探针，200 {"status":"ok"}（实测 2.38.6）。
+  endpoint: "/healthz"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 240
+  version_assertion:
+    kind: "exec_command"
+    command: >-
+      n8n --version
+    expected: "{version_no_v}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/n8n/tests"
+  scenarios:
+    - slug: "editor"
+      url: "/"
+      caption:
+        en: "Workflow editor (first run)"
+        zh: "工作流编辑器（首次运行）"
+
+deployment:
+  size: "small"
+  documentation_url: "https://docs.n8n.io"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "The first visit opens the editor's owner setup screen; the account you create there is the instance owner. There are no preset credentials."
+      zh: "首次访问进入编辑器的所有者设置页，创建的账户即实例所有者；没有预置账号密码。"
+    notes:
+      - en: "Workflows and credentials live on a retained data volume (/home/node/.n8n). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "工作流与凭据保存在保留数据卷（/home/node/.n8n）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + $4 for 20 GB root and 30 GB data gp3 + $3.65 public IPv4 per month. Data transfer, snapshots and CloudWatch usage are extra."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月，20GB 系统盘 + 30GB 数据盘 gp3 约 $4/月，公网 IPv4 约 $3.65/月；流量、快照和 CloudWatch 用量另计。"
+  data_path: "/home/node/.n8n"
+
+website:
+  featured: true
+  screenshots_order: ["editor"]
+  tags: ["automation", "workflow", "integration"]
+  features:
+    - en: "Automated testing before each release"
+      zh: "每次发布前自动化测试"
+    - en: "Visual workflow builder with 400+ app integrations"
+      zh: "可视化工作流编排，400+ 应用集成"
+    - en: "Native AI/LLM nodes, one-click CloudFormation deploy"
+      zh: "原生 AI/LLM 节点，CloudFormation 一键部署"

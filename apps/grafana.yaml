@@ -1,0 +1,88 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md（校验规则见 §5，共 20 条）
+#
+# 版本可观测性：/api/health 免鉴权返回 {"database":"ok","version":"13.2.1",...}，
+# api_json_path 直接取 version 字段（实测 grafana/grafana:13.2.1）。
+
+app:
+  name: "grafana"
+  category: "devops"
+  app_type: "stateful_app"
+  icon: "/icons/grafana.svg"
+  i18n:
+    en:
+      display_name: "Grafana"
+      description: "Observability dashboards for metrics, logs and traces"
+    zh:
+      display_name: "Grafana 可视化"
+      description: "面向指标、日志与链路的可观测性仪表盘"
+
+source:
+  repo: "grafana/grafana"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "grafana/grafana"
+  # 上游 tag v13.2.1 → Docker Hub tag 13.2.1（官方镜像 tag 无 v 前缀）
+  image_tag_template: "grafana/grafana:{version_no_v}"
+  container_port: 3000
+  compose_file: "apps/grafana/docker-compose.yml"
+  # Grafana 开箱默认内嵌 SQLite（/var/lib/grafana/grafana.db），无需注入应用私有 env
+
+health_check:
+  endpoint: "/api/health"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 180
+  version_assertion:
+    kind: "api_json_path"
+    path: "/api/health"
+    json_pointer: "/version"
+    expected: "{version_no_v}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/grafana/tests"
+  scenarios:
+    - slug: "login"
+      url: "/login"
+      caption:
+        en: "Login page"
+        zh: "登录页"
+
+deployment:
+  size: "small"
+  documentation_url: "https://grafana.com/docs/"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/login"
+    admin_setup:
+      en: "Log in as the built-in admin user created on first start; the web UI asks you to set new credentials on first login. There are no preset credentials to retrieve."
+      zh: "使用首次启动时创建的内置 admin 账户登录；首次登录时网页会引导你设置新的凭据，没有需要去哪里获取的预置密码。"
+    notes:
+      - en: "Dashboards and the embedded database live on a retained data volume (/var/lib/grafana). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "仪表盘与内嵌数据库保存在保留数据卷（/var/lib/grafana）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + $4 for 20 GB root and 30 GB data gp3 + $3.65 public IPv4 per month. Data transfer, snapshots and CloudWatch usage are extra."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月，20GB 系统盘 + 30GB 数据盘 gp3 约 $4/月，公网 IPv4 约 $3.65/月；流量、快照和 CloudWatch 用量另计。"
+  data_path: "/var/lib/grafana"
+
+website:
+  featured: true
+  screenshots_order: ["login"]
+  tags: ["observability", "dashboards", "metrics"]
+  features:
+    - en: "Automated testing before each release"
+      zh: "每次发布前自动化测试"
+    - en: "Dashboards for metrics, logs and traces from any data source"
+      zh: "接入任意数据源的指标、日志与链路仪表盘"
+    - en: "Embedded SQLite storage, one-click CloudFormation deploy"
+      zh: "内置 SQLite 存储，CloudFormation 一键部署"
