@@ -19,10 +19,11 @@ def test_healthz_ready(base_url):
 
 
 def test_editor_renders(base_url, browser_page):
-    # 双保险：探针已等编辑器就绪，这里再容忍 SPA 客户端渲染的滞后
+    # 双保险：探针已等编辑器 HTML 就绪；CI 实测首屏 JS 冷启动可超 60s
+    # （管线截图在 pytest 之后，能渲染出来即证明只是慢），等待给足 180s。
     page = browser_page
     page.goto(base_url + "/", wait_until="domcontentloaded")
-    page.wait_for_selector("input", timeout=60_000)
+    page.wait_for_selector("input", timeout=180_000)
     text = page.locator("body").inner_text()
     assert text.strip(), "编辑器渲染为空白"
     # 无既有用户的首启：所有者设置界面（n8n 2.x，实测文案 "Set up owner account"）
