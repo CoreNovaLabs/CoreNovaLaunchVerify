@@ -1,0 +1,19 @@
+# Jellyfin · CoreNova 验证用 compose
+#
+# 单一事实源约束（contracts/app-schema.md §0）：
+#   - image 只用 ${CORENOVA_APP_IMAGE}（= 精确 tag@digest，由验证器注入）
+#   - 端口只用 ${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}
+#   - 数据挂载到本次验证独占的临时目录 ${CORENOVA_DATA_DIR}，跑完即弃
+#
+# 实测：jellyfin/jellyfin:12.0 官方镜像默认 root 运行，/config /cache /media
+# 为官方挂载点；验证只挂 /config（cache 留容器内，跑完即弃）。
+services:
+  jellyfin:
+    image: ${CORENOVA_APP_IMAGE}
+    restart: "no"
+    ports:
+      - "${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}"
+    environment:
+      JELLYFIN_PublishedServerUrl: ${CORENOVA_APP_URL}
+    volumes:
+      - ${CORENOVA_DATA_DIR}:/config

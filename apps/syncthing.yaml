@@ -1,0 +1,91 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：`syncthing --version` 输出形如
+# "syncthing v2.1.5 \"Hafnium Hornet\" (go1.27.1 ...)"（实测），第 2 列带 v，
+# exec_command 取它与 {version} 精确比对。
+
+app:
+  name: "syncthing"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/syncthing.svg"
+  i18n:
+    en:
+      display_name: "Syncthing"
+      description: "Continuous peer-to-peer file synchronization between devices"
+    zh:
+      display_name: "Syncthing 文件同步"
+      description: "设备间点对点持续文件同步"
+
+source:
+  repo: "syncthing/syncthing"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "syncthing/syncthing"
+  # 上游 tag v2.1.5 → Docker Hub tag 2.1.5（实测存在，官方发布说明确认）
+  image_tag_template: "syncthing/syncthing:{version_no_v}"
+  container_port: 8384
+  compose_file: "apps/syncthing/docker-compose.yml"
+
+health_check:
+  # /rest/noauth/health 免鉴权，200 {"status":"OK"}（实测 syncthing/syncthing:2.1.5）
+  endpoint: "/rest/noauth/health"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 180
+  version_assertion:
+    kind: "exec_command"
+    command: >-
+      /bin/syncthing --version | awk '{print $2}'
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/syncthing/tests"
+  scenarios:
+    - slug: "gui"
+      url: "/"
+      caption:
+        en: "Web GUI"
+        zh: "Web 管理界面"
+
+deployment:
+  size: "small"
+  documentation_url: "https://docs.syncthing.net"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "The web GUI is open at / for local use; before exposing it publicly, configure GUI access protection per the upstream docs (Settings > GUI). There are no preset accounts."
+      zh: "Web 管理界面在 / 开放（本地访问免认证）；对外公开前请按上游文档在设置 > GUI 中完成访问保护配置。没有预置账号。"
+    notes:
+      - en: "Sync folders live on a retained volume (/var/syncthing). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "同步文件夹保存在保留数据卷（/var/syncthing）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+      - en: "Default container ports 22000/tcp+udp and 21027/udp are used for device sync (LAN discovery); the CFN security group opens 22000 for cross-device sync."
+        zh: "容器默认的 22000/tcp+udp 与 21027/udp 用于设备间同步（局域网发现）；CFN 安全组已放行 22000 以支持跨设备同步。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month. Transfer traffic is extra."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月；同步流量另计。"
+  data_path: "/var/syncthing"
+
+website:
+  featured: true
+  screenshots_order: ["gui"]
+  tags: ["sync", "backup", "p2p"]
+  features:
+    - en: "Peer-to-peer sync, no cloud middleman"
+      zh: "点对点同步，不经过云端"
+    - en: "Encrypted transport and versioned file history"
+      zh: "加密传输与文件版本历史"
+    - en: "Runs on desktop, NAS, and servers with a web GUI"
+      zh: "桌面、NAS 与服务器通吃，带 Web 管理界面"

@@ -1,0 +1,22 @@
+# Firefly III · CoreNova 验证用 compose
+#
+# 单一事实源约束（contracts/app-schema.md §0）：
+#   - image 只用 ${CORENOVA_APP_IMAGE}（= 精确 tag@digest，由验证器注入）
+#   - 端口只用 ${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}
+#   - 数据挂载到本次验证独占的临时目录 ${CORENOVA_DATA_DIR}，跑完即弃
+#
+# 实测：fireflyiii/core:version-6.6.6 以 www-data 运行，SQLite 需
+# DB_CONNECTION=sqlite；APP_KEY 是验证容器的一次性占位密钥（非用户秘密，
+# 不用于加密任何真实数据）。首启跑 Laravel/Passport 迁移约 30–60s。
+services:
+  firefly-iii:
+    image: ${CORENOVA_APP_IMAGE}
+    restart: "no"
+    ports:
+      - "${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}"
+    environment:
+      DB_CONNECTION: sqlite
+      # 一次性验证容器占位密钥（32 字节 base64，Laravel 硬性要求；非用户秘密）
+      APP_KEY: base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+    volumes:
+      - ${CORENOVA_DATA_DIR}:/var/www/html/storage/upload

@@ -1,0 +1,23 @@
+# Vikunja · CoreNova 验证用 compose
+#
+# 单一事实源约束（contracts/app-schema.md §0）：
+#   - image 只用 ${CORENOVA_APP_IMAGE}（= 精确 tag@digest，由验证器注入）
+#   - 端口只用 ${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}
+#   - 应用自引用 URL 只用 ${CORENOVA_APP_URL}（经 VIKUNJA_SERVICE_PUBLICURL 注入）
+#   - 数据挂载到本次验证独占的临时目录 ${CORENOVA_DATA_DIR}，跑完即弃
+#
+# 实测：vikunja/vikunja:2.6.0 以 uid=1000 运行，SQLite 落 /db/vikunja.db、
+# 附件落 /app/vikunja/files，两处都需要可写卷 → 双挂载同一数据目录。
+# 不设 VIKUNJA_SERVICE_PUBLICURL 时进程直接退出（cors.enable 校验）。
+services:
+  vikunja:
+    image: ${CORENOVA_APP_IMAGE}
+    restart: "no"
+    ports:
+      - "${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}"
+    environment:
+      VIKUNJA_SERVICE_PUBLICURL: ${CORENOVA_APP_URL}/
+      VIKUNJA_SERVICE_JWTSECRET: corenova-verification-only-not-a-secret
+    volumes:
+      - ${CORENOVA_DATA_DIR}:/db
+      - ${CORENOVA_DATA_DIR}:/app/vikunja/files

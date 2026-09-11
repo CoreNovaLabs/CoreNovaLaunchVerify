@@ -1,0 +1,18 @@
+# Portainer · CoreNova 验证用 compose
+#
+# 单一事实源约束（contracts/app-schema.md §0）：
+#   - image 只用 ${CORENOVA_APP_IMAGE}（= 精确 tag@digest，由验证器注入）
+#   - 端口只用 ${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}
+#   - 数据挂载到本次验证独占的临时目录 ${CORENOVA_DATA_DIR}，跑完即弃
+#
+# 实测：portainer/portainer-ce:2.45.0 以 root 运行，/data 自建；管理 Docker
+# 需要 /var/run/docker.sock（CI runner 与 EC2 上均存在）。9000 是 HTTP 口。
+services:
+  portainer:
+    image: ${CORENOVA_APP_IMAGE}
+    restart: "no"
+    ports:
+      - "${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}"
+    volumes:
+      - ${CORENOVA_DATA_DIR}:/data
+      - /var/run/docker.sock:/var/run/docker.sock

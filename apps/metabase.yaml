@@ -1,0 +1,92 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：/api/session/properties 免鉴权返回完整配置，其中
+# version.tag = "v0.63.17"（实测），api_json_path 取它与 {version} 精确比对。
+
+app:
+  name: "metabase"
+  category: "devops"
+  app_type: "stateful_app"
+  icon: "/icons/metabase.svg"
+  i18n:
+    en:
+      display_name: "Metabase"
+      description: "Open-source BI and analytics: query, visualize and dashboard your data"
+    zh:
+      display_name: "Metabase 商业智能"
+      description: "开箱即用的开源 BI 与数据可视化分析平台"
+
+source:
+  repo: "metabase/metabase"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "metabase/metabase"
+  # 上游 tag v0.63.17 → Docker Hub tag v0.63.17（实测存在，v 前缀保留）
+  image_tag_template: "metabase/metabase:{version}"
+  container_port: 3000
+  compose_file: "apps/metabase/docker-compose.yml"
+
+health_check:
+  # /api/health 免鉴权，200 {"status":"ok"}（实测 v0.63.17）
+  endpoint: "/api/health"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 60
+  interval_seconds: 3
+  startup_timeout_seconds: 300
+  version_assertion:
+    kind: "api_json_path"
+    path: "/api/session/properties"
+    json_pointer: "/version/tag"
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/metabase/tests"
+  scenarios:
+    - slug: "welcome"
+      url: "/"
+      caption:
+        en: "First-run welcome"
+        zh: "首次运行欢迎页"
+
+deployment:
+  size: "medium"
+  documentation_url: "https://www.metabase.com/docs"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "First visit opens the welcome/setup wizard: pick language, create the admin account, add a data source (or skip). There are no preset credentials."
+      zh: "首次访问进入欢迎向导：选择语言、创建管理员账户、添加数据源（可跳过）；没有预置账号密码。"
+    notes:
+      - en: "Verified with the embedded H2 database (default). For production, connect an external PostgreSQL/MySQL in the setup wizard."
+        zh: "已验证默认内嵌 H2 数据库形态。生产使用建议在向导中连接外部 PostgreSQL/MySQL。"
+      - en: "Metabase needs ~1.5 GB RAM; the CFN 'medium' profile (t3.medium) is the minimum recommended size."
+        zh: "Metabase 需要 ~1.5GB 内存；CFN 'medium' 档（t3.medium）为推荐最低配置。"
+      - en: "H2 data lives on a retained volume (/metabase.db). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "H2 数据保存在保留数据卷（/metabase.db）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 39
+    note:
+      en: "Verified default in us-east-1: ~$30.4 t3.medium + ~$2 for the 20 GB root and data volumes + $3.65 public IPv4 per month. H2 is single-node only; swap to RDS for HA."
+      zh: "us-east-1 已验证默认配置：t3.medium 约 $30.4/月 + 系统盘与数据盘 gp3 约 $2/月 + 公网 IPv4 约 $3.65/月。H2 不支持多节点；高可用请接 RDS。"
+  data_path: "/metabase.db"
+
+website:
+  featured: true
+  screenshots_order: ["welcome"]
+  tags: ["bi", "analytics", "dashboards"]
+  features:
+    - en: "Question builder over SQL or GUI, no BI expertise needed"
+      zh: "SQL 或图形化两种方式构建查询，无需 BI 专业背景"
+    - en: "Interactive dashboards with auto-refresh and drill-down"
+      zh: "交互式仪表盘，支持自动刷新与下钻"
+    - en: "Embedded H2 for instant start; PostgreSQL/MySQL/Snowflake etc. as sources"
+      zh: "内嵌 H2 即刻可用；支持接入 PostgreSQL/MySQL/Snowflake 等数据源"

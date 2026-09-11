@@ -1,0 +1,96 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：/system/info/public 免鉴权返回 {"Version":"12.0.0",...}（实测 12.0）。
+# 上游 tag v12.0 → {version_no_v}=12.0，match=prefix 匹配服务端上报的 12.0.0
+# （12.0 起官方放弃 10. 前缀、改为两段 tag，服务端仍报三段）。
+
+app:
+  name: "jellyfin"
+  category: "media"
+  app_type: "stateful_app"
+  icon: "/icons/jellyfin.svg"
+  i18n:
+    en:
+      display_name: "Jellyfin"
+      description: "Free software media system: stream movies, shows and music to any device"
+    zh:
+      display_name: "Jellyfin 媒体中心"
+      description: "免费开源的流媒体服务，把影音库串流到任何设备"
+
+source:
+  repo: "jellyfin/jellyfin"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "jellyfin/jellyfin"
+  # 上游 tag v12.0 → Docker Hub tag 12.0（实测存在）
+  image_tag_template: "jellyfin/jellyfin:{version_no_v}"
+  container_port: 8096
+  compose_file: "apps/jellyfin/docker-compose.yml"
+
+health_check:
+  # /health 免鉴权，200 "Healthy"（实测 jellyfin/jellyfin:12.0）
+  endpoint: "/health"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 60
+  interval_seconds: 3
+  startup_timeout_seconds: 300
+  version_assertion:
+    # api_json_path /system/info/public 不可用：首启迁移期该端点先返回无
+    # Version 字段的 JSON（实测 KeyError）。改取容器内二进制版本，输出形如
+    # "Jellyfin.Server 12.0.0.0"，第 2 列 12.0.0.0 与 {version_no_v}=12.0 前缀匹配。
+    kind: "exec_command"
+    command: >-
+      /jellyfin/jellyfin --version 2>&1 | awk '{print $2}'
+    expected: "{version_no_v}"
+    match: "prefix"
+
+tests:
+  predefined_dir: "apps/jellyfin/tests"
+  scenarios:
+    - slug: "wizard"
+      url: "/"
+      caption:
+        en: "Startup wizard"
+        zh: "初始化向导"
+
+deployment:
+  size: "medium"
+  documentation_url: "https://jellyfin.org/docs"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "First visit opens the startup wizard: set language, user account and library folders in the form. There are no preset credentials."
+      zh: "首次访问进入初始化向导：在表单中设置语言、用户账户与媒体库目录；没有预置账号密码。"
+    notes:
+      - en: "Media files should be mounted/uploaded to the media volume (/media); empty installs ship no content."
+        zh: "媒体文件需挂载/上传到媒体卷（/media）；空装实例不含任何内容。"
+      - en: "Jellyfin benefits from ~1 GB+ RAM; the CFN 'medium' profile (t3.medium) is recommended for transcoding."
+        zh: "Jellyfin 建议 ~1GB 以上内存；如需转码推荐 CFN 'medium' 档（t3.medium）。"
+      - en: "Config and cache live on a retained volume (/config). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "配置与缓存保存在保留数据卷（/config）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 39
+    note:
+      en: "Verified default in us-east-1: ~$30.4 t3.medium + ~$2 for the 30 GB root and data gp3 volumes + $3.65 public IPv4 per month. Transcoding CPU/network usage is extra."
+      zh: "us-east-1 已验证默认配置：t3.medium 约 $30.4/月 + 30GB 系统盘与数据盘 gp3 约 $2/月 + 公网 IPv4 约 $3.65/月；转码产生的 CPU/流量另计。"
+  data_path: "/config"
+
+website:
+  featured: true
+  screenshots_order: ["wizard"]
+  tags: ["media", "streaming", "plex-alternative"]
+  features:
+    - en: "Stream to browsers, TVs and mobile apps (Jellyfin clients)"
+      zh: "串流到浏览器、电视与移动客户端"
+    - en: "Movies, shows, music and books with metadata and subtitles"
+      zh: "电影、剧集、音乐与书籍，含元数据与字幕"
+    - en: "No accounts or tracking required; fully self-hosted"
+      zh: "无需账号与追踪，完全自托管"

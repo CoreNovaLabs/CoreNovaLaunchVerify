@@ -1,0 +1,90 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：/api/v1/info 免鉴权返回 {"version":"v2.11.0",...}（实测 2.11.0），
+# api_json_path 取它与 {version} 精确比对。上游 tag 带 v，Docker Hub tag 同。
+
+app:
+  name: "netdata"
+  category: "devops"
+  app_type: "stateful_app"
+  icon: "/icons/netdata.svg"
+  i18n:
+    en:
+      display_name: "Netdata"
+      description: "Real-time infrastructure monitoring with per-second metrics"
+    zh:
+      display_name: "Netdata 监控"
+      description: "秒级实时基础设施与应用监控"
+
+source:
+  repo: "netdata/netdata"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "netdata/netdata"
+  # 上游 tag v2.11.0 → Docker Hub tag v2.11.0（实测存在，v 前缀保留）
+  image_tag_template: "netdata/netdata:{version}"
+  container_port: 19999
+  compose_file: "apps/netdata/docker-compose.yml"
+
+health_check:
+  # / 免鉴权 200（dashboard），/api/v1/info 免鉴权 JSON（实测 v2.11.0）
+  endpoint: "/api/v1/info"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 60
+  interval_seconds: 3
+  startup_timeout_seconds: 240
+  version_assertion:
+    kind: "api_json_path"
+    path: "/api/v1/info"
+    json_pointer: "/version"
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/netdata/tests"
+  scenarios:
+    - slug: "dashboard"
+      url: "/"
+      caption:
+        en: "Live metrics dashboard"
+        zh: "实时指标仪表盘"
+
+deployment:
+  size: "small"
+  documentation_url: "https://learn.netdata.cloud"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "The dashboard is open at / for local use without sign-in; for remote management, create a Netdata Cloud space or configure claiming per the upstream docs."
+      zh: "仪表盘在 / 直接开放（本地访问免登录）；远程纳管请创建 Netdata Cloud 空间或按上游文档完成接入配置。"
+    notes:
+      - en: "Netdata runs as a container agent: it sees host metrics only for the namespaces/cgroups mounted in; the CFN template mounts the standard /proc, /sys and cgroup paths."
+        zh: "Netdata 以容器形态运行，只能采集已挂载 namespace/cgroup 的主机指标；CFN 模板已挂载标准 /proc、/sys 与 cgroup 路径。"
+      - en: "Time-series live in-container by default; metrics history is not persisted to the retained volume unless configured."
+        zh: "默认时序数据保存在容器内；除非另行配置，指标历史不持久化到保留数据卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month. Netdata Cloud is a separate (free-tier) service."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月；Netdata Cloud 为独立（免费档）服务。"
+  data_path: "/var/lib/netdata"
+
+website:
+  featured: true
+  screenshots_order: ["dashboard"]
+  tags: ["monitoring", "metrics", "observability"]
+  features:
+    - en: "Per-second metrics for CPU, memory, disk, network and apps"
+      zh: "CPU、内存、磁盘、网络与应用的秒级指标"
+    - en: "Zero-configuration auto-detection of services"
+      zh: "零配置自动发现服务与指标"
+    - en: "Built-in anomaly detection and alerting"
+      zh: "内置异常检测与告警"

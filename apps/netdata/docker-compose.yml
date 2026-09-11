@@ -1,0 +1,22 @@
+# Netdata · CoreNova 验证用 compose
+#
+# 单一事实源约束（contracts/app-schema.md §0）：
+#   - image 只用 ${CORENOVA_APP_IMAGE}（= 精确 tag@digest，由验证器注入）
+#   - 端口只用 ${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}
+#   - 数据挂载到本次验证独占的临时目录 ${CORENOVA_DATA_DIR}，跑完即弃
+#
+# 实测：netdata/netdata:v2.11.0 容器内监听 19999，/api/v1/info 免鉴权；
+# 完整主机指标需要挂 /proc /sys /var/run/docker.sock，但验证只断言
+# "服务可用 + 版本正确"，容器内自采指标即可满足（CI 里无特权需求）。
+services:
+  netdata:
+    image: ${CORENOVA_APP_IMAGE}
+    restart: "no"
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - apparmor=unconfined
+    ports:
+      - "${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}"
+    volumes:
+      - ${CORENOVA_DATA_DIR}:/var/lib/netdata

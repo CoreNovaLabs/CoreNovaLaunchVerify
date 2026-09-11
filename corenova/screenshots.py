@@ -31,10 +31,16 @@ def capture(spec: AppSpec, root: Path, base_url: str, out_dir: Path, timeout_ms:
         page.set_default_timeout(timeout_ms)
         for s in spec.scenarios:
             slug, url = str(s["slug"]), base_url.rstrip("/") + str(s.get("url", "/"))
-            page.goto(url, wait_until="networkidle")
+            # networkidle 只给 45s 预算：长轮询应用（如 syncthing 的事件流）永不
+            # 网络空闲，超时后降级到 load 态 + 加长 settle，而不是硬失败。
+            settled = True
+            try:
+                page.goto(url, wait_until="networkidle", timeout=45_000)
+            except Exception:  # noqa: BLE001 - 降级渲染路径
+                settled = False
             if prepare:
                 prepare(page, slug)
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(500 if settled else 4_000)
             target = out_dir / f"{slug}.png"
             # 视口尺寸而非 full_page：full_page 让截图高度随页面内容变化（矮页面 1440x900、
             # 高页面 1440x1513），官网截图卡是固定 16:10，非 16:10 的图会被 contain 留出约四成空白。

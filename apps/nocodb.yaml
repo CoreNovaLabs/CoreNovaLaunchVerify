@@ -1,0 +1,91 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：/api/v1/meta/nocodb/info 免鉴权返回 {"version":"2026.09.0",...}
+# （实测 2026.09.0，日期式版本，extract_semver 可解析）。
+# 上游 tag 无 v 前缀，Docker Hub tag 与上游一致。
+
+app:
+  name: "nocodb"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/nocodb.svg"
+  i18n:
+    en:
+      display_name: "NocoDB"
+      description: "Open-source Airtable alternative: turn any database into a smart spreadsheet"
+    zh:
+      display_name: "NocoDB 数据库表格"
+      description: "开源 Airtable 替代品，把任意数据库变成智能表格"
+
+source:
+  repo: "nocodb/nocodb"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "nocodb/nocodb"
+  # 上游 tag 2026.09.0 → Docker Hub tag 2026.09.0（实测存在）
+  image_tag_template: "nocodb/nocodb:{version}"
+  container_port: 8080
+  compose_file: "apps/nocodb/docker-compose.yml"
+
+health_check:
+  # /api/v1/health 免鉴权，200 {"message":"OK",...}（实测 nocodb/nocodb:2026.09.0）
+  endpoint: "/api/v1/health"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 240
+  version_assertion:
+    kind: "api_json_path"
+    path: "/api/v1/meta/nocodb/info"
+    json_pointer: "/version"
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/nocodb/tests"
+  scenarios:
+    - slug: "signup"
+      url: "/signup"
+      caption:
+        en: "First user sign-up"
+        zh: "首个用户注册页"
+
+deployment:
+  size: "small"
+  documentation_url: "https://docs.nocodb.com"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/signup"
+    admin_setup:
+      en: "The first signed-up account becomes the instance super admin. There are no preset credentials."
+      zh: "注册的第一个账户即实例超级管理员；没有预置账号密码。"
+    notes:
+      - en: "Verified with the embedded SQLite (default). For production, connect PostgreSQL/MySQL in the environment before first boot."
+        zh: "已验证默认内嵌 SQLite 形态。生产使用建议在首次启动前通过环境变量接入 PostgreSQL/MySQL。"
+      - en: "Database and metadata live on a retained volume (/usr/app/data). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "数据库与元数据保存在保留数据卷（/usr/app/data）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月。"
+  data_path: "/usr/app/data"
+
+website:
+  featured: true
+  screenshots_order: ["signup"]
+  tags: ["database", "spreadsheet", "airtable-alternative"]
+  features:
+    - en: "Spreadsheet UI over SQLite/Postgres/MySQL and more"
+      zh: "为 SQLite/Postgres/MySQL 等提供表格界面"
+    - en: "Views, forms, kanban and gallery per table"
+      zh: "每张表支持视图、表单、看板与图库"
+    - en: "REST & GraphQL APIs generated automatically"
+      zh: "自动生成 REST 与 GraphQL API"

@@ -1,0 +1,91 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：/api/v1/info 免鉴权返回 {"version":"v2.6.0",...}（实测 2.6.0）。
+# 实测坑：镜像以 uid=1000 运行，/db（SQLite）与 /app/vikunja/files（附件）都
+# 需要可写卷，compose 双挂载 ${CORENOVA_DATA_DIR}；不设 PUBLICURL 直接退出。
+
+app:
+  name: "vikunja"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/vikunja.svg"
+  i18n:
+    en:
+      display_name: "Vikunja"
+      description: "To-do app to organize tasks, projects and teams"
+    zh:
+      display_name: "Vikunja 任务管理"
+      description: "开源待办与项目任务管理工具"
+
+source:
+  repo: "go-vikunja/vikunja"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "vikunja/vikunja"
+  # 上游 tag v2.6.0 → Docker Hub tag 2.6.0（实测存在）
+  image_tag_template: "vikunja/vikunja:{version_no_v}"
+  container_port: 3456
+  compose_file: "apps/vikunja/docker-compose.yml"
+  extra_environment:
+    - "VIKUNJA_SERVICE_PUBLICURL=${CORENOVA_APP_URL}/"
+
+health_check:
+  # /api/v1/info 免鉴权，200 JSON（实测 vikunja/vikunja:2.6.0）
+  endpoint: "/api/v1/info"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 180
+  version_assertion:
+    kind: "api_json_path"
+    path: "/api/v1/info"
+    json_pointer: "/version"
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/vikunja/tests"
+  scenarios:
+    - slug: "register"
+      url: "/register"
+      caption:
+        en: "Account registration"
+        zh: "账户注册页"
+
+deployment:
+  size: "small"
+  documentation_url: "https://vikunja.io/docs"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/register"
+    admin_setup:
+      en: "The first registered account becomes the instance admin. There are no preset credentials."
+      zh: "注册的第一个账户即实例管理员；没有预置账号密码。"
+    notes:
+      - en: "Database (SQLite) and attachments live on a retained volume (/db). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "数据库（SQLite）与附件保存在保留数据卷（/db）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月。"
+  data_path: "/db"
+
+website:
+  featured: true
+  screenshots_order: ["register"]
+  tags: ["todo", "tasks", "projects"]
+  features:
+    - en: "Projects, labels, reminders and recurring tasks"
+      zh: "项目、标签、提醒与重复任务"
+    - en: "Kanban boards, Gantt and table views"
+      zh: "看板、甘特图与表格视图"
+    - en: "Team sharing with granular permissions"
+      zh: "团队共享与细粒度权限"

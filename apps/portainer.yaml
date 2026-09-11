@@ -1,0 +1,91 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：/api/status 免鉴权返回 {"Version":"2.45.0","InstanceID":...}（实测 2.45.0），
+# api_json_path 取 Version 与 {version_no_v} 精确比对。
+# 注意：9443 是 HTTPS 口，验证走 9000 HTTP 口。
+
+app:
+  name: "portainer"
+  category: "devops"
+  app_type: "stateful_app"
+  icon: "/icons/portainer.svg"
+  i18n:
+    en:
+      display_name: "Portainer"
+      description: "Lightweight container management UI for Docker environments"
+    zh:
+      display_name: "Portainer 容器管理"
+      description: "轻量级 Docker 容器可视化管理面板"
+
+source:
+  repo: "portainer/portainer"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "portainer/portainer-ce"
+  # 上游 tag 2.45.0 → Docker Hub tag 2.45.0（实测存在）
+  image_tag_template: "portainer/portainer-ce:{version_no_v}"
+  container_port: 9000
+  compose_file: "apps/portainer/docker-compose.yml"
+
+health_check:
+  # /api/status 免鉴权，200 JSON；版本取 .Version（实测 2.45.0）
+  endpoint: "/api/status"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 120
+  version_assertion:
+    kind: "api_json_path"
+    path: "/api/status"
+    json_pointer: "/Version"
+    expected: "{version_no_v}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/portainer/tests"
+  scenarios:
+    - slug: "setup"
+      url: "/#!/init/admin"
+      caption:
+        en: "First-run admin setup"
+        zh: "首次运行管理员设置"
+
+deployment:
+  size: "small"
+  documentation_url: "https://docs.portainer.io"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/#!/init/admin"
+    admin_setup:
+      en: "First visit opens the admin account creation page: follow the on-screen form to set up the admin account (username fixed to 'admin'). No preset access."
+      zh: "首次访问进入管理员创建页面：按页面向导完成 admin 账户的初始设置（用户名固定为 admin）；没有预置账号。"
+    notes:
+      - en: "Portainer needs the host Docker socket (/var/run/docker.sock) mounted to manage containers; the CFN template provides it."
+        zh: "Portainer 需要挂载宿主机 Docker socket（/var/run/docker.sock）才能管理容器；CFN 模板已提供。"
+      - en: "Data lives on a retained volume (/data). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "数据保存在保留数据卷（/data）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 16
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$0.8 for the 8 GB root volume per month. No separate data volume is required."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 8GB 系统盘约 $0.8/月；无需独立数据盘。"
+  data_path: "/data"
+
+website:
+  featured: true
+  screenshots_order: ["setup"]
+  tags: ["docker", "containers", "admin-ui"]
+  features:
+    - en: "Web UI to manage containers, images, volumes and networks"
+      zh: "网页管理容器、镜像、卷与网络"
+    - en: "Template-based one-click app deployment"
+      zh: "基于模板的一键应用部署"
+    - en: "User & team management with access control"
+      zh: "用户与团队管理、访问控制"

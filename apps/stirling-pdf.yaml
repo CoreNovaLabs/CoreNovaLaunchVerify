@@ -1,0 +1,89 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：/api/v1/info/status 免鉴权返回 {"version":"2.14.3","status":"UP"}
+# （实测 2.14.3）。注意 2.x 起 / 返回 401（登录强制），SPA 落点在 /login（200），
+# 探针与测试都打 /login 与 API，不打 /。
+
+app:
+  name: "stirling-pdf"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/stirling-pdf.svg"
+  i18n:
+    en:
+      display_name: "Stirling PDF"
+      description: "Locally hosted web app for 50+ PDF operations: merge, split, OCR, convert"
+    zh:
+      display_name: "Stirling PDF 工具箱"
+      description: "自托管 PDF 全能工具箱：合并、拆分、OCR、转换等 50+ 操作"
+
+source:
+  repo: "Stirling-Tools/Stirling-PDF"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "stirlingtools/stirling-pdf"
+  # 上游 tag v2.14.3 → Docker Hub tag 2.14.3（实测存在）
+  image_tag_template: "stirlingtools/stirling-pdf:{version_no_v}"
+  container_port: 8080
+  compose_file: "apps/stirling-pdf/docker-compose.yml"
+
+health_check:
+  # /api/v1/info/status 免鉴权，200 {"version":"2.14.3","status":"UP"}（实测）
+  endpoint: "/api/v1/info/status"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 60
+  interval_seconds: 3
+  startup_timeout_seconds: 240
+  version_assertion:
+    kind: "api_json_path"
+    path: "/api/v1/info/status"
+    json_pointer: "/version"
+    expected: "{version_no_v}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/stirling-pdf/tests"
+  scenarios:
+    - slug: "login"
+      url: "/login"
+      caption:
+        en: "Login page"
+        zh: "登录页"
+
+deployment:
+  size: "small"
+  documentation_url: "https://docs.stirlingpdf.com"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/login"
+    admin_setup:
+      en: "2.x enables login by default: first visit opens /login; create the initial user per the upstream docs (initial login flow). There are no preset credentials."
+      zh: "2.x 默认启用登录：首次访问落在 /login，按上游文档在初始登录流程中创建首个用户；没有预置账号密码。"
+    notes:
+      - en: "Processed files are kept only for the session and wiped on restart; nothing sensitive persists on the retained volume (/tmp/stirling-pdf) unless configured."
+        zh: "处理过的文件仅在会话内保留、重启即清除；除非另行配置，保留数据卷（/tmp/stirling-pdf）不存放敏感内容。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month. OCR/convert jobs are CPU-bound."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月；OCR/转换属 CPU 密集型。"
+  data_path: "/tmp/stirling-pdf"
+
+website:
+  featured: true
+  screenshots_order: ["login"]
+  tags: ["pdf", "documents", "ocr"]
+  features:
+    - en: "Merge, split, rotate, compress PDFs in the browser"
+      zh: "浏览器中完成 PDF 合并、拆分、旋转、压缩"
+    - en: "OCR with multi-language recognition"
+      zh: "多语言 OCR 文字识别"
+    - en: "Convert between PDF and Office/image formats"
+      zh: "PDF 与 Office/图片格式互转"

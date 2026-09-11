@@ -1,0 +1,92 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：Firefly III 的 /api/v1/about 需要鉴权（实测 302→/login），
+# 但容器内有 artisan 命令 `firefly-iii:output-version`，输出恰为版本号
+# "6.6.6"（实测），exec_command 取它。
+# 注意：Docker Hub tag 带 version- 前缀（version-6.6.6）。
+
+app:
+  name: "firefly-iii"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/firefly-iii.svg"
+  i18n:
+    en:
+      display_name: "Firefly III"
+      description: "Personal finance manager: track expenses, budgets and net worth"
+    zh:
+      display_name: "Firefly III 个人理财"
+      description: "自托管个人财务管理：支出、预算与净资产"
+
+source:
+  repo: "firefly-iii/firefly-iii"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "fireflyiii/core"
+  # 上游 tag v6.6.6 → Docker Hub tag version-6.6.6（实测存在）
+  image_tag_template: "fireflyiii/core:version-{version_no_v}"
+  container_port: 8080
+  compose_file: "apps/firefly-iii/docker-compose.yml"
+
+health_check:
+  # / 302 → /login（落点 200，探针跟随重定向）。首启迁移约 30–60s。
+  endpoint: "/"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 60
+  interval_seconds: 3
+  startup_timeout_seconds: 300
+  version_assertion:
+    kind: "exec_command"
+    command: >-
+      php /var/www/html/artisan firefly-iii:output-version
+    expected: "{version_no_v}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/firefly-iii/tests"
+  scenarios:
+    - slug: "login"
+      url: "/login"
+      caption:
+        en: "Login page"
+        zh: "登录页"
+
+deployment:
+  size: "small"
+  documentation_url: "https://docs.firefly-iii.org"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/register"
+    admin_setup:
+      en: "First visit redirects to the login page; open /register to create the first (admin) account. There are no preset credentials."
+      zh: "首次访问会跳到登录页；访问 /register 创建第一个（管理员）账户；没有预置账号密码。"
+    notes:
+      - en: "Verified with SQLite (DB_CONNECTION=sqlite). For production, connect PostgreSQL/MySQL via environment variables before first boot."
+        zh: "已验证 SQLite（DB_CONNECTION=sqlite）形态。生产使用建议在首次启动前通过环境变量接入 PostgreSQL/MySQL。"
+      - en: "Database lives on a retained volume (/var/www/html/storage/upload + sqlite db). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "数据库与上传文件保存在保留数据卷中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月。"
+  data_path: "/var/www/html/storage"
+
+website:
+  featured: true
+  screenshots_order: ["login"]
+  tags: ["finance", "budgeting", "expenses"]
+  features:
+    - en: "Double-entry bookkeeping for accounts, budgets and piggy banks"
+      zh: "复式记账：账户、预算与存钱罐"
+    - en: "Rules engine to auto-categorize transactions"
+      zh: "规则引擎自动分类交易"
+    - en: "REST API with reports and multi-currency support"
+      zh: "REST API，支持报表与多币种"
