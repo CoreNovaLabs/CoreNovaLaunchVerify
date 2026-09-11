@@ -1,0 +1,95 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：`python3 -m homeassistant --version` 输出恰为版本号
+# "2026.9.1"（实测），exec_command 取它与 {version} 精确比对。
+# 镜像在 ghcr.io（split_image 原生支持非 docker.io registry）；上游发
+# patch release 时 GitHub tag 与 ghcr tag 均为 2026.9.1 形式。
+
+app:
+  name: "home-assistant"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/home-assistant.svg"
+  i18n:
+    en:
+      display_name: "Home Assistant"
+      description: "Open-source home automation: local control and privacy-first smart home"
+    zh:
+      display_name: "Home Assistant 智能家居"
+      description: "开源智能家居中枢，本地优先、隐私至上"
+
+source:
+  repo: "home-assistant/core"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "ghcr.io/home-assistant/home-assistant"
+  # 上游 tag 2026.9.1 → ghcr tag 2026.9.1（实测存在）
+  image_tag_template: "ghcr.io/home-assistant/home-assistant:{version}"
+  container_port: 8123
+  compose_file: "apps/home-assistant/docker-compose.yml"
+
+health_check:
+  # / 302 → /onboarding.html（全新容器首启），探针跟随重定向落点 200。
+  # 首启初始化较慢（实测 ~2-4 分钟），启动窗口已放宽。
+  endpoint: "/"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 60
+  interval_seconds: 5
+  startup_timeout_seconds: 420
+  version_assertion:
+    kind: "exec_command"
+    command: >-
+      python3 -m homeassistant --version
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/home-assistant/tests"
+  scenarios:
+    - slug: "onboarding"
+      url: "/"
+      caption:
+        en: "Onboarding wizard"
+        zh: "初始化向导"
+
+deployment:
+  size: "medium"
+  documentation_url: "https://www.home-assistant.io/docs/"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "First visit opens the onboarding wizard: create the owner account, set location, then discover integrations. There are no preset credentials."
+      zh: "首次访问进入初始化向导：创建管理员账户、设置位置、发现集成；没有预置账号密码。"
+    notes:
+      - en: "Verified with the default SQLite recorder. Integrations and device discovery inside a cloud VPC are limited to what the network exposes; USB/Bluetooth radios are not available."
+        zh: "已验证默认 SQLite 记录器形态。云 VPC 内的设备发现受网络限制；USB/蓝牙等本地无线电不可用。"
+      - en: "Config and database live on a retained volume (/config). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "配置与数据库保存在保留数据卷（/config）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+      - en: "Home Assistant benefits from ~1 GB+ RAM; the CFN 'medium' profile (t3.medium) is recommended once integrations grow."
+        zh: "Home Assistant 建议 ~1GB 以上内存；集成增多后推荐 CFN 'medium' 档（t3.medium）。"
+  cost_estimate:
+    monthly_usd: 39
+    note:
+      en: "Verified default in us-east-1: ~$30.4 t3.medium + ~$2 for the 30 GB root and data gp3 volumes + $3.65 public IPv4 per month."
+      zh: "us-east-1 已验证默认配置：t3.medium 约 $30.4/月 + 30GB 系统盘与数据盘 gp3 约 $2/月 + 公网 IPv4 约 $3.65/月。"
+  data_path: "/config"
+
+website:
+  featured: true
+  screenshots_order: ["onboarding"]
+  tags: ["smart-home", "automation", "iot"]
+  features:
+    - en: "Local-first control for 2000+ device integrations"
+      zh: "本地优先，支持 2000+ 设备集成"
+    - en: "Visual automation editor with blueprints"
+      zh: "可视化自动化编辑器与蓝图"
+    - en: "Voice, dashboards and mobile companions included"
+      zh: "内置语音、仪表盘与移动端伴侣"

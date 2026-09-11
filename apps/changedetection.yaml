@@ -1,0 +1,94 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：直接读镜像内 /app/changedetectionio/__init__.py 第 5 行的
+# __version__ = '0.60.4'（sed 提取，实测输出恰为版本号）。
+# 不用 `import changedetectionio`：启动早期与主进程首_import 存在 pyc 编译
+# 竞态会导致 exec 瞬时失败；文件直读无副作用、启动任意时刻都稳定。
+# 命名说明：应用名受 NAME_RE ^[a-z0-9-]+$ 限制，不能带点号，故 slug 用
+# "changedetection"，显示名保留上游品牌 "changedetection.io"。
+
+app:
+  name: "changedetection"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/changedetection.svg"
+  i18n:
+    en:
+      display_name: "changedetection.io"
+      description: "Website change detection & notifications: watch web pages for changes"
+    zh:
+      display_name: "changedetection.io 网页变动监测"
+      description: "网页变动监测与通知：持续盯守网页变化并即时提醒"
+
+source:
+  repo: "dgtlmoon/changedetection.io"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "dgtlmoon/changedetection.io"
+  # 上游 tag 0.60.4 → Docker Hub tag 0.60.4（实测存在，无 v 前缀）
+  image_tag_template: "dgtlmoon/changedetection.io:{version}"
+  container_port: 5000
+  compose_file: "apps/changedetection/docker-compose.yml"
+
+health_check:
+  # / 免鉴权 200（实测，全新容器首启即渲染 watchlist 界面）
+  endpoint: "/"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 180
+  version_assertion:
+    kind: "exec_command"
+    command: >-
+      sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" /app/changedetectionio/__init__.py
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/changedetection/tests"
+  scenarios:
+    - slug: "watchlist"
+      url: "/"
+      caption:
+        en: "Watchlist dashboard"
+        zh: "监控列表面板"
+
+deployment:
+  size: "small"
+  documentation_url: "https://github.com/dgtlmoon/changedetection.io/wiki"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "The watchlist UI at / is open to the network; add a URL to start watching. No preset accounts."
+      zh: "监控界面在 / 直接开放；添加 URL 即可开始盯守网页变化；没有预置账号。"
+    notes:
+      - en: "The bundled Playwright/Chromium fetcher runs in the same container; scraping targets inside the cloud VPC work, JavaScript-heavy pages may need more RAM."
+        zh: "内置的 Playwright/Chromium 抓取器与主服务同容器运行；VPC 内目标可正常抓取，重 JS 页面建议提升内存。"
+      - en: "Watch data and history live on a retained volume (/datastore). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "监控任务与历史快照保存在保留数据卷（/datastore）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月。"
+  data_path: "/datastore"
+
+website:
+  featured: true
+  screenshots_order: ["watchlist"]
+  tags: ["monitoring", "notifications", "web"]
+  features:
+    - en: "Watch any web page for visual, text or JSON changes"
+      zh: "监测任意网页的可见、文本或 JSON 变化"
+    - en: "Re-render JavaScript with the bundled Playwright fetcher"
+      zh: "内置 Playwright 抓取器，支持重 JS 页面"
+    - en: "Alerts via email, Telegram, Discord and 80+ channels"
+      zh: "支持邮件、Telegram、Discord 等 80+ 通知渠道"

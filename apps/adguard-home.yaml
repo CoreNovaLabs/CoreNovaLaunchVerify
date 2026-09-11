@@ -1,0 +1,91 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：`/opt/adguardhome/AdGuardHome --version` 输出
+# "AdGuard Home, version v0.107.79"（实测），第 4 列带 v，exec_command
+# 取它与 {version} 精确比对。全新容器首启 / 302 → /install.html。
+
+app:
+  name: "adguard-home"
+  category: "devops"
+  app_type: "stateful_app"
+  icon: "/icons/adguard-home.svg"
+  i18n:
+    en:
+      display_name: "AdGuard Home"
+      description: "Network-wide ads & trackers blocking DNS server with web console"
+    zh:
+      display_name: "AdGuard Home 广告过滤"
+      description: "全网广告与跟踪器过滤的 DNS 服务器，带管理控制台"
+
+source:
+  repo: "AdguardTeam/AdGuardHome"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "adguard/adguardhome"
+  # 上游 tag v0.107.79 → Docker Hub tag v0.107.79（实测存在，v 前缀保留）
+  image_tag_template: "adguard/adguardhome:{version}"
+  container_port: 3000
+  compose_file: "apps/adguard-home/docker-compose.yml"
+
+health_check:
+  # / 302 → /install.html（全新容器），探针跟随重定向落点 200
+  endpoint: "/"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 180
+  version_assertion:
+    kind: "exec_command"
+    command: >-
+      /opt/adguardhome/AdGuardHome --version | awk '{print $4}'
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/adguard-home/tests"
+  scenarios:
+    - slug: "install"
+      url: "/"
+      caption:
+        en: "Installation wizard"
+        zh: "安装向导"
+
+deployment:
+  size: "small"
+  documentation_url: "https://github.com/AdguardTeam/AdGuardHome/wiki"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "First visit opens the installation wizard: pick the web/DNS listen interfaces and create the admin account in the same flow. There are no preset credentials."
+      zh: "首次访问进入安装向导：选择 Web/DNS 监听接口并在同一流程中创建管理员账户；没有预置账号密码。"
+    notes:
+      - en: "To use it as your DNS server, point devices (or a router's DHCP) at the instance's port 53; the CFN security group opens 53/tcp+udp."
+        zh: "将其用作 DNS 时，把设备（或路由器 DHCP 下发）指向实例的 53 端口；CFN 安全组已放行 53/tcp+udp。"
+      - en: "Config and stats live on a retained volume (/opt/adguardhome/conf + work). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "配置与统计数据保存在保留数据卷（/opt/adguardhome/conf + work）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month. DNS query traffic is extra."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月；DNS 查询流量另计。"
+  data_path: "/opt/adguardhome/conf"
+
+website:
+  featured: true
+  screenshots_order: ["install"]
+  tags: ["dns", "adblock", "privacy"]
+  features:
+    - en: "Network-wide ad and tracker blocking via DNS"
+      zh: "DNS 层全网广告与跟踪器过滤"
+    - en: "Per-client rules, parental control and query log"
+      zh: "按客户端规则、家长控制与查询日志"
+    - en: "Encrypted upstream DNS (DoH/DoT/DoQ) support"
+      zh: "支持加密上游 DNS（DoH/DoT/DoQ）"

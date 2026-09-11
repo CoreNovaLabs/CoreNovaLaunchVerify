@@ -1,0 +1,90 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：/api/v1/info 免鉴权返回 {"Version":"v1.31.1",...}（实测），
+# api_json_path 取它与 {version} 精确比对。
+
+app:
+  name: "mailpit"
+  category: "devops"
+  app_type: "stateful_app"
+  icon: "/icons/mailpit.svg"
+  i18n:
+    en:
+      display_name: "Mailpit"
+      description: "Email testing tool & API for developers: catch all mail in a web UI"
+    zh:
+      display_name: "Mailpit 邮件测试"
+      description: "开发者邮件测试工具：全量捕获外发邮件并提供 Web UI 与 API"
+
+source:
+  repo: "axllent/mailpit"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "axllent/mailpit"
+  # 上游 tag v1.31.1 → Docker Hub tag v1.31.1（实测存在，v 前缀保留）
+  image_tag_template: "axllent/mailpit:{version}"
+  container_port: 8025
+  compose_file: "apps/mailpit/docker-compose.yml"
+
+health_check:
+  # /api/v1/info 免鉴权，200 JSON 含 Version（实测 v1.31.1）
+  endpoint: "/api/v1/info"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 40
+  interval_seconds: 3
+  startup_timeout_seconds: 120
+  version_assertion:
+    kind: "api_json_path"
+    path: "/api/v1/info"
+    json_pointer: "/Version"
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/mailpit/tests"
+  scenarios:
+    - slug: "inbox"
+      url: "/"
+      caption:
+        en: "Web inbox"
+        zh: "Web 收件箱"
+
+deployment:
+  size: "small"
+  documentation_url: "https://github.com/axllent/mailpit/wiki"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "The web inbox at / is open; point applications' SMTP at the instance's port 1025 to capture mail. No preset credentials."
+      zh: "Web 收件箱在 / 直接开放；把应用的 SMTP 指向实例的 1025 端口即可捕获邮件；没有预置账号。"
+    notes:
+      - en: "SMTP listens on container port 1025 (the CFN security group opens it); the web UI/API on 8025."
+        zh: "SMTP 监听容器 1025 端口（CFN 安全组已放行）；Web UI/API 在 8025。"
+      - en: "Mail lives on a retained volume (/data, SQLite). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "邮件保存在保留数据卷（/data，SQLite）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月。"
+  data_path: "/data"
+
+website:
+  featured: true
+  screenshots_order: ["inbox"]
+  tags: ["email", "testing", "smtp"]
+  features:
+    - en: "Catch-all SMTP sink with a fast web UI"
+      zh: "全量 SMTP 捕获，Web UI 响应迅速"
+    - en: "REST API for automated email testing"
+      zh: "REST API 支持自动化邮件测试"
+    - en: "HTML/CSS preview, spam & link checks built in"
+      zh: "内置 HTML/CSS 预览与垃圾/链接检查"

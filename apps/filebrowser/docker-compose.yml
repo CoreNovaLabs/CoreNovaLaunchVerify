@@ -1,0 +1,17 @@
+# File Browser · CoreNova 验证用 compose
+#
+# 单一事实源约束（contracts/app-schema.md §0）：
+#   - image 只用 ${CORENOVA_APP_IMAGE}（= 精确 tag@digest，由验证器注入）
+#   - 端口只用 ${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}
+#   - 数据挂载到本次验证独占的临时目录 ${CORENOVA_DATA_DIR}，跑完即弃
+#
+# 实测：filebrowser/filebrowser:v2.63.23 官方入口脚本以 --database /database
+# 启动（库文件不存在时自动创建），Web 监听容器 80；文件树默认 /srv。
+services:
+  filebrowser:
+    image: ${CORENOVA_APP_IMAGE}
+    restart: "no"
+    ports:
+      - "${CORENOVA_HOST_PORT}:${CORENOVA_CONTAINER_PORT}"
+    volumes:
+      - ${CORENOVA_DATA_DIR}:/database

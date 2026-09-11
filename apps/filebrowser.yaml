@@ -1,0 +1,92 @@
+# CoreNova Launch · 应用注册（App Schema 唯一事实源）
+# 契约：contracts/app-schema.md
+#
+# 版本可观测性：`/bin/filebrowser version` 输出 "File Browser v2.63.23/e8a388f8"
+# （实测；二进制在 /bin，不在 PATH 直接命中的位置），取第 3 列并截掉 /hash
+# 后缀得到 "v2.63.23"，exec_command 与 {version} 精确比对。
+# 注：候选清单中的 Jellyseerr 因上游不发布精确版本 tag（仅 latest）被替换为本应用。
+
+app:
+  name: "filebrowser"
+  category: "productivity"
+  app_type: "stateful_app"
+  icon: "/icons/filebrowser.svg"
+  i18n:
+    en:
+      display_name: "File Browser"
+      description: "Web file manager: browse, upload and share files from a browser"
+    zh:
+      display_name: "File Browser 文件管理器"
+      description: "Web 文件管理器：在浏览器里浏览、上传与分享文件"
+
+source:
+  repo: "filebrowser/filebrowser"
+  version_strategy: "release_tag"
+  release_filter:
+    prerelease: false
+    draft: false
+
+deploy:
+  docker_image: "filebrowser/filebrowser"
+  # 上游 tag v2.63.23 → Docker Hub tag v2.63.23（实测存在，v 前缀保留）
+  image_tag_template: "filebrowser/filebrowser:{version}"
+  container_port: 80
+  compose_file: "apps/filebrowser/docker-compose.yml"
+
+health_check:
+  # / 免鉴权 200（实测，全新容器首启即渲染登录页）
+  endpoint: "/"
+  expected_status: 200
+  method: "GET"
+  timeout_seconds: 5
+  retries: 30
+  interval_seconds: 3
+  startup_timeout_seconds: 90
+  version_assertion:
+    kind: "exec_command"
+    command: >-
+      /bin/filebrowser version | awk '{print $3}' | cut -d/ -f1
+    expected: "{version}"
+    match: "exact"
+
+tests:
+  predefined_dir: "apps/filebrowser/tests"
+  scenarios:
+    - slug: "login"
+      url: "/"
+      caption:
+        en: "Sign-in page"
+        zh: "登录页"
+
+deployment:
+  size: "small"
+  documentation_url: "https://filebrowser.org/"
+  regions: ["us-east-1"]
+  post_deploy:
+    admin_path: "/"
+    admin_setup:
+      en: "Sign in at / with the factory default account (see upstream docs) and set a new one at first sign-in; served files live under the container's /srv."
+      zh: "在 / 使用出厂默认账号登录（见上游文档），首次登录后立即更换；对外提供的文件位于容器内 /srv。"
+    notes:
+      - en: "The file tree (/srv) is ephemeral container storage in this verified shape; point users at the database volume lifecycle below."
+        zh: "本验证形态下文件树（/srv）为容器内临时存储；数据库卷的生命周期见下条。"
+      - en: "The settings database lives on a retained volume (/database). It keeps billing after stack deletion; snapshot it, then delete the volume when no longer needed."
+        zh: "设置数据库保存在保留数据卷（/database）中。删除栈后该卷仍会计费；请先创建快照，不再需要时再删除卷。"
+  cost_estimate:
+    monthly_usd: 23
+    note:
+      en: "Verified default in us-east-1: ~$15.2 t3.small + ~$4 for the 20 GB root and 30 GB data gp3 volumes + $3.65 public IPv4 per month."
+      zh: "us-east-1 已验证默认配置：t3.small 约 $15.2/月 + 20GB 系统盘与 30GB 数据盘 gp3 约 $4/月 + 公网 IPv4 约 $3.65/月。"
+  data_path: "/database"
+
+website:
+  featured: true
+  screenshots_order: ["login"]
+  tags: ["files", "storage", "web"]
+  features:
+    - en: "Full-featured web file manager with uploads and downloads"
+      zh: "全功能 Web 文件管理，支持上传下载"
+    - en: "Share files and folders with generated links"
+      zh: "一键生成分享链接"
+    - en: "Single Go binary, tiny footprint, multi-user support"
+      zh: "单二进制 Go 实现，资源占用极小，支持多用户"
