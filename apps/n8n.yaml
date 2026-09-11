@@ -41,8 +41,9 @@ deploy:
     - "N8N_PERSONALIZATION_ENABLED=false"
 
 health_check:
-  # /healthz 免鉴权存活探针，200 {"status":"ok"}（实测 2.38.6）。
-  endpoint: "/healthz"
+  # 探针打 / 而非 /healthz：CI 实测 healthz 先就绪、编辑器静态路由随后才挂载
+  # （期间 / 返回 404 "Cannot GET /"）。探针打 / 才能保证"编辑器真的可访问"。
+  endpoint: "/"
   expected_status: 200
   method: "GET"
   timeout_seconds: 5

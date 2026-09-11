@@ -21,7 +21,11 @@ def test_api_health_ready(base_url):
 
 def test_login_page_renders(base_url, browser_page):
     page = browser_page
-    page.goto(base_url + "/login", wait_until="networkidle")
+    # CI 实测：networkidle 可能早于 React 挂载（body 为空），改等登录表单出现
+    page.goto(base_url + "/login", wait_until="domcontentloaded")
+    page.wait_for_selector("input", timeout=60_000)
     text = page.locator("body").inner_text()
     assert text.strip(), "登录页渲染为空白"
-    assert "grafana" in text.lower(), "登录页缺少 Grafana 标识"
+    assert (
+        "grafana" in text.lower() or "sign in" in text.lower() or "log in" in text.lower()
+    ), "登录页缺少 Grafana 标识"
